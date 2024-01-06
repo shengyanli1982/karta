@@ -2,32 +2,46 @@ package karta
 
 import "sync"
 
+// 工作元素, 用于 Group 和 Queue
+// Worker element, used by Group and Queue
 type element struct {
 	data  any
 	value int64
 }
 
+// 获取数据
+// get data.
 func (e *element) Data() any {
 	return e.data
 }
 
+// 获取值
+// get value.
 func (e *element) Value() int64 {
 	return e.value
 }
 
+// 设置数据
+// set data.
 func (e *element) SetData(data any) {
 	e.data = data
 }
 
+// 设置值
+// set value.
 func (e *element) SetValue(value int64) {
 	e.value = value
 }
 
+// 重置
+// reset.
 func (e *element) Reset() {
 	e.data = nil
 	e.value = 0
 }
 
+// 对象池
+// object pool.
 type pool struct {
 	p *sync.Pool
 }
@@ -71,6 +85,7 @@ func (e *elementExt) Reset() {
 	e.fn = nil
 }
 
+// 对象池
 type extpool struct {
 	p *sync.Pool
 }
