@@ -100,7 +100,7 @@ func (g *Group) fetch() []any {
 	return results
 }
 
-func (g *Group) Start(items []any) []any {
+func (g *Group) Map(items []any) []any {
 	if len(items) == 0 {
 		return nil
 	}

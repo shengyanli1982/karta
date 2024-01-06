@@ -1,9 +1,10 @@
-package karta
+package test
 
 import (
 	"testing"
 	"time"
 
+	k "github.com/shengyanli1982/karta"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -23,13 +24,13 @@ func (c *callback) OnAfter(msg, result any, err error) {
 	assert.Nil(c.t, err)
 }
 
-func TestGroupStart(t *testing.T) {
-	c := NewConfig()
+func TestGroupMap(t *testing.T) {
+	c := k.NewConfig()
 	c.WithHandleFunc(handleFunc).WithWorkerNumber(2).WithResult()
 
-	g := NewGroup(c)
+	g := k.NewGroup(c)
 	assert.NotNil(t, g)
-	r0 := g.Start([]any{3, 5, 2})
+	r0 := g.Map([]any{3, 5, 2})
 	assert.Equal(t, 3, len(r0))
 	assert.Equal(t, 3, r0[0])
 	assert.Equal(t, 5, r0[1])
@@ -37,25 +38,25 @@ func TestGroupStart(t *testing.T) {
 	g.Stop()
 }
 
-func TestGroupStartWithLargeWorkers(t *testing.T) {
-	c := NewConfig()
+func TestGroupMapWithLargeWorkers(t *testing.T) {
+	c := k.NewConfig()
 	c.WithHandleFunc(handleFunc).WithWorkerNumber(200).WithResult()
 
-	g := NewGroup(c)
+	g := k.NewGroup(c)
 	assert.NotNil(t, g)
-	r0 := g.Start([]any{1, 2})
+	r0 := g.Map([]any{1, 2})
 	assert.Equal(t, 2, len(r0))
 	assert.Equal(t, 1, r0[0])
 	assert.Equal(t, 2, r0[1])
 	g.Stop()
 }
 
-func TestGroupStartWithCallback(t *testing.T) {
-	c := NewConfig()
+func TestGroupMapWithCallback(t *testing.T) {
+	c := k.NewConfig()
 	c.WithHandleFunc(handleFunc).WithCallback(&callback{t: t})
 
-	g := NewGroup(c)
+	g := k.NewGroup(c)
 	assert.NotNil(t, g)
-	_ = g.Start([]any{3, 5, 2})
+	_ = g.Map([]any{3, 5, 2})
 	g.Stop()
 }
