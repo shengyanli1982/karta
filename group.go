@@ -122,6 +122,7 @@ func (g *Group) execute() []any {
 					// execute callback function OnAfter.
 					g.config.cb.OnAfter(d, r, err)
 					// 如果需要返回结果, 则将结果放入结果数组
+					// if need return result, put result into result array.
 					if g.config.result {
 						results[item.Value()] = r
 					}
