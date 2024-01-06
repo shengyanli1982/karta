@@ -113,7 +113,7 @@ func (q *Queue) executor() {
 			if h != nil {
 				r, err = h(d.Data())
 			} else {
-				r, err = q.config.h(d)
+				r, err = q.config.h(d.Data())
 			}
 			// 执行回调函数 OnAfter
 			// execute callback function OnAfter.
@@ -127,7 +127,7 @@ func (q *Queue) executor() {
 
 // 提交带有自定义处理函数的任务
 // submit task with custom handle function.
-func (q *Queue) SubmitWithFunc(fn MessageHandleFunc, msg any) error {
+func (q *Queue) SubmitWithFunc(fn MessageHandleFunc, data any) error {
 	// 如果队列已经关闭，则返回错误
 	// if queue is closed, return error.
 	if q.queue.IsClosed() {
@@ -136,7 +136,7 @@ func (q *Queue) SubmitWithFunc(fn MessageHandleFunc, msg any) error {
 	// 从对象池中获取一个扩展元素
 	// get an extended element from the pool.
 	e := elementExtPool.Get()
-	e.SetData(msg)
+	e.SetData(data)
 	e.SetHandler(fn)
 	// 将扩展元素添加到工作队列中
 	// add extended element to the queue.
@@ -151,6 +151,6 @@ func (q *Queue) SubmitWithFunc(fn MessageHandleFunc, msg any) error {
 
 // 提交任务
 // submit task.
-func (q *Queue) Submit(msg any) error {
-	return q.SubmitWithFunc(nil, msg)
+func (q *Queue) Submit(data any) error {
+	return q.SubmitWithFunc(nil, data)
 }
