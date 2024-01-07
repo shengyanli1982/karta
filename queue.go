@@ -4,10 +4,19 @@ import (
 	"context"
 	"errors"
 	"sync"
+	"sync/atomic"
+	"time"
 )
 
 var (
 	ErrorQueueClosed = errors.New("queue is closed")
+)
+
+var (
+	// 默认的工作者空闲超时时间, 10 秒 (default worker idle timeout, 10 seconds)
+	defaultWorkerIdleTimeout = (10 * time.Second).Milliseconds()
+	// 默认的最小工作者数量 (default minimum number of workers)
+	defaultMinWorkerNum = int64(1)
 )
 
 // 扩展元素内存池
@@ -33,6 +42,8 @@ type Queue struct {
 	once   sync.Once
 	ctx    context.Context
 	cancel context.CancelFunc
+	timer  atomic.Int64
+	rc     atomic.Int64 // 正在运行 Worker 的数量
 }
 
 // 创建一个新的队列
@@ -49,15 +60,38 @@ func NewQueue(queue QInterface, conf *Config) *Queue {
 		config: conf,
 		wg:     sync.WaitGroup{},
 		once:   sync.Once{},
+		timer:  atomic.Int64{},
+		rc:     atomic.Int64{},
 	}
 	q.ctx, q.cancel = context.WithCancel(context.Background())
+	q.timer.Store(time.Now().UnixMilli())
 
 	// 启动工作者
 	// start workers.
+	q.rc.Store(int64(conf.num))
 	q.wg.Add(conf.num)
 	for i := 0; i < conf.num; i++ {
 		go q.executor()
 	}
+
+	// 启动时间定时器
+	q.wg.Add(1)
+	go func() {
+		ticker := time.NewTicker(time.Second)
+		defer func() {
+			ticker.Stop()
+			q.wg.Done()
+		}()
+
+		for {
+			select {
+			case <-q.ctx.Done():
+				return
+			case <-ticker.C:
+				q.timer.Store(time.Now().UnixMilli())
+			}
+		}
+	}()
 
 	return &q
 }
@@ -77,13 +111,32 @@ func (q *Queue) Stop() {
 // 执行器，执行工作队列中的任务
 // executor, execute tasks in the queue.
 func (q *Queue) executor() {
-	defer q.wg.Done()
+	// 任务执行最后一次启动时间点
+	// last start time of task execution.
+	updateAt := time.Now().UnixMilli()
+
+	// 启动空闲超时定时器
+	// start idle timeout timer.
+	ticker := time.NewTicker(3 * time.Second)
+
+	defer func() {
+		q.wg.Done()
+		ticker.Stop()
+	}()
 
 	for {
 		select {
 		case <-q.ctx.Done():
 			return
+		case <-ticker.C:
+			// 如果空闲超时，则判断当前工作者数量是否超过最小工作者数量，如果超过则返回
+			// if idle timeout, judge whether number of workers is greater than minimum number of workers, if greater than, return.
+			if q.timer.Load()-updateAt >= defaultWorkerIdleTimeout && q.rc.Load() > defaultMinWorkerNum {
+				return
+			}
 		default:
+			// 更新时间
+			updateAt = q.timer.Load()
 			// 如果队列已经关闭，则返回
 			// if queue is closed, return.
 			if q.queue.IsClosed() {
@@ -127,7 +180,7 @@ func (q *Queue) executor() {
 
 // 提交带有自定义处理函数的任务
 // submit task with custom handle function.
-func (q *Queue) SubmitWithFunc(fn MessageHandleFunc, data any) error {
+func (q *Queue) SubmitWithFunc(fn MessageHandleFunc, msg any) error {
 	// 如果队列已经关闭，则返回错误
 	// if queue is closed, return error.
 	if q.queue.IsClosed() {
@@ -136,7 +189,7 @@ func (q *Queue) SubmitWithFunc(fn MessageHandleFunc, data any) error {
 	// 从对象池中获取一个扩展元素
 	// get an extended element from the pool.
 	e := elementExtPool.Get()
-	e.SetData(data)
+	e.SetData(msg)
 	e.SetHandler(fn)
 	// 将扩展元素添加到工作队列中
 	// add extended element to the queue.
@@ -146,11 +199,20 @@ func (q *Queue) SubmitWithFunc(fn MessageHandleFunc, data any) error {
 		elementExtPool.Put(e)
 		return err
 	}
+	// 判断当前工作队列中的任务数量是否超足够, 如果不足则启动一个新的工作者
+	// if number of tasks in the queue is not enough, start a new worker.
+	if int64(q.config.num) > q.rc.Load() {
+		q.rc.Add(1)
+		q.wg.Add(1)
+		go q.executor()
+	}
+	// 正确执行，返回 nil
+	// execute correctly, return nil.
 	return nil
 }
 
 // 提交任务
 // submit task.
-func (q *Queue) Submit(data any) error {
-	return q.SubmitWithFunc(nil, data)
+func (q *Queue) Submit(msg any) error {
+	return q.SubmitWithFunc(nil, msg)
 }

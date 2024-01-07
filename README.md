@@ -15,41 +15,6 @@ Why `Karta`? In my job, I need to do a lot of job processing. I want to use like
 -   `Group`: tasks batch processing by `Group`.
 -   `Queue`: task one by one processing by `Queue`. Any task can specify a handle function.
 
-### Example
-
-```go
-package main
-
-import (
-	"time"
-
-	k "github.com/shengyanli1982/karta"
-)
-
-func handleFunc(msg any) (any, error) {
-	time.Sleep(time.Duration(msg.(int)) * time.Millisecond * 100)
-	return msg, nil
-}
-
-func main() {
-	c := k.NewConfig()
-	c.WithHandleFunc(handleFunc).WithWorkerNumber(2).WithResult()
-
-	g := k.NewGroup(c)
-	defer g.Stop()
-
-	r0 := g.Map([]any{3, 5, 2})
-	println(r0[0].(int))
-}
-```
-
-**Result**
-
-```bash
-$ go run demo.go
-3
-```
-
 # Advantage
 
 -   Simple and easy to use
@@ -79,7 +44,7 @@ go get github.com/shengyanli1982/karta
 
 #### 1. Group
 
-`Group` is a batch processing component. It can be used to batch process tasks once at a time.
+`Group` is a batch processing component. It can be used to batch process tasks once at a time. `Group` use fix number of workers to process tasks.
 
 **Methods**
 
@@ -122,12 +87,18 @@ $ go run demo.go
 
 #### 2. Queue
 
-`Queue` is a task processing component. It can be used to process tasks one by one.
+`Queue` is a task processing component. It can be used to process tasks one by one. `Queue` use dynamic number of workers to process tasks, which means the number of workers will be decreased when there is no task to process and will be increased when there are tasks to process.
+
+If worker is idle, it will be closed after `defaultWorkerIdleTimeout` which is `10` seconds.
+
+Long time idle, workers number will decrease to `defaultMinWorkerNum` which is `1`.
+
+When `msg` posted by `Submit` or `SubmitWithFunc`, it will be processed by the idle worker. If there is no idle worker, a new worker will be created to process the `msg`. The number of running workers will be increased to value which set by config `WithWorkerNumber` method if the number of running workers is not enough.
 
 **Methods**
 
--   `SubmitWithFunc`: submit a task with a handle function. `data` is the handle function parameter. `fn` is the handle function. If `fn` is `nil`, the handle function will be `WithHandleFunc` to set.
--   `Submit`: submit a task without a handle function. `data` is the handle function parameter. The handle function will be `WithHandleFunc` to set.
+-   `SubmitWithFunc`: submit a task with a handle function. `msg` is the handle function parameter. `fn` is the handle function. If `fn` is `nil`, the handle function will be `WithHandleFunc` to set.
+-   `Submit`: submit a task without a handle function. `msg` is the handle function parameter. The handle function will be `WithHandleFunc` to set.
 
 **Example**
 
