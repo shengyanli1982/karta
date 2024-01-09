@@ -7,7 +7,7 @@ import (
 
 // 元素内存池
 // element pool.
-var elepool = NewElementPool()
+var elementPool = NewElementPool()
 
 // 批量处理任务
 // batch process task.
@@ -62,7 +62,7 @@ func (g *Group) prepare(items []any) {
 	for i := 0; i < count; i++ {
 		// 从内存池中获取一个元素
 		// get an element from element pool.
-		e := elepool.Get()
+		e := elementPool.Get()
 		// 设置数据和值
 		// set data and value.
 		e.SetData(items[i])
@@ -111,7 +111,7 @@ func (g *Group) execute() []any {
 					g.lock.Unlock()
 					// 获取数据
 					// get data.
-					d := item.Data()
+					d := item.GetData()
 					// 执行回调函数 OnBefore
 					// execute callback function OnBefore.
 					g.config.cb.OnBefore(d)
@@ -124,11 +124,11 @@ func (g *Group) execute() []any {
 					// 如果需要返回结果, 则将结果放入结果数组
 					// if need return result, put result into result array.
 					if g.config.result {
-						results[item.Value()] = r
+						results[item.GetValue()] = r
 					}
 					// 将元素放入内存池
 					// put element into element pool.
-					elepool.Put(item)
+					elementPool.Put(item)
 				}
 			}
 		}()

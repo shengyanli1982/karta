@@ -11,13 +11,13 @@ type element struct {
 
 // 获取数据
 // get data.
-func (e *element) Data() any {
+func (e *element) GetData() any {
 	return e.data
 }
 
 // 获取值
 // get value.
-func (e *element) Value() int64 {
+func (e *element) GetValue() int64 {
 	return e.value
 }
 
@@ -41,14 +41,14 @@ func (e *element) Reset() {
 }
 
 // 对象池
-// object pool.
-type pool struct {
-	p *sync.Pool
+// object ObjectPool.
+type ObjectPool struct {
+	pool *sync.Pool
 }
 
-func NewElementPool() *pool {
-	return &pool{
-		p: &sync.Pool{
+func NewElementPool() *ObjectPool {
+	return &ObjectPool{
+		pool: &sync.Pool{
 			New: func() any {
 				return &element{}
 			},
@@ -56,14 +56,14 @@ func NewElementPool() *pool {
 	}
 }
 
-func (p *pool) Get() *element {
-	return p.p.Get().(*element)
+func (p *ObjectPool) Get() *element {
+	return p.pool.Get().(*element)
 }
 
-func (p *pool) Put(e *element) {
+func (p *ObjectPool) Put(e *element) {
 	if e != nil {
 		e.Reset()
-		p.p.Put(e)
+		p.pool.Put(e)
 	}
 }
 
@@ -72,11 +72,11 @@ type elementExt struct {
 	fn MessageHandleFunc
 }
 
-func (e *elementExt) Handler() MessageHandleFunc {
+func (e *elementExt) GetHandleFunc() MessageHandleFunc {
 	return e.fn
 }
 
-func (e *elementExt) SetHandler(fn MessageHandleFunc) {
+func (e *elementExt) SetHandleFunc(fn MessageHandleFunc) {
 	e.fn = fn
 }
 
@@ -86,13 +86,13 @@ func (e *elementExt) Reset() {
 }
 
 // 对象池
-type extpool struct {
-	p *sync.Pool
+type ExtendObjectPool struct {
+	pool *sync.Pool
 }
 
-func NewElementExtPool() *extpool {
-	return &extpool{
-		p: &sync.Pool{
+func NewElementExtPool() *ExtendObjectPool {
+	return &ExtendObjectPool{
+		pool: &sync.Pool{
 			New: func() any {
 				return &elementExt{}
 			},
@@ -100,13 +100,13 @@ func NewElementExtPool() *extpool {
 	}
 }
 
-func (p *extpool) Get() *elementExt {
-	return p.p.Get().(*elementExt)
+func (p *ExtendObjectPool) Get() *elementExt {
+	return p.pool.Get().(*elementExt)
 }
 
-func (p *extpool) Put(e *elementExt) {
+func (p *ExtendObjectPool) Put(e *elementExt) {
 	if e != nil {
 		e.Reset()
-		p.p.Put(e)
+		p.pool.Put(e)
 	}
 }
