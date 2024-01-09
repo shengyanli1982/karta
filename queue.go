@@ -159,14 +159,14 @@ func (q *Queue) executor() {
 			q.config.cb.OnBefore(d)
 			// 执行消息处理函数
 			// execute message handle function.
-			h := d.Handler()
+			h := d.GetHandleFunc()
 			var r any
 			// 如果指定函数不为 nil，则执行消息处理函数。 否则使用 config 中的函数
 			// if handle function is not nil, execute it. otherwise use function in config.
 			if h != nil {
-				r, err = h(d.Data())
+				r, err = h(d.GetData())
 			} else {
-				r, err = q.config.h(d.Data())
+				r, err = q.config.h(d.GetData())
 			}
 			// 执行回调函数 OnAfter
 			// execute callback function OnAfter.
@@ -190,7 +190,7 @@ func (q *Queue) SubmitWithFunc(fn MessageHandleFunc, msg any) error {
 	// get an extended element from the pool.
 	e := elementExtPool.Get()
 	e.SetData(msg)
-	e.SetHandler(fn)
+	e.SetHandleFunc(fn)
 	// 将扩展元素添加到工作队列中
 	// add extended element to the queue.
 	if err := q.queue.Add(e); err != nil {
