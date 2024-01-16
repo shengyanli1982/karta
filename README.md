@@ -95,6 +95,19 @@ Long time idle, workers number will decrease to `defaultMinWorkerNum` which is `
 
 When `msg` posted by `Submit` or `SubmitWithFunc`, it will be processed by the idle worker. If there is no idle worker, a new worker will be created to process the `msg`. The number of running workers will be increased to value which set by config `WithWorkerNumber` method if the number of running workers is not enough.
 
+`Queue` need a queue object to store tasks. The queue object must implement `QInterface` interface.
+
+```go
+// queue interface.
+type QInterface interface {
+	Add(element any) error         // 添加元素 (add element)
+	Get() (element any, err error) // 获取元素 (get element)
+	Done(element any)              // 标记元素完成 (mark element done)
+	Stop()                         // 停止队列 (stop queue)
+	IsClosed() bool                // 判断队列是否已经关闭 (judge whether queue is closed)
+}
+```
+
 **Methods**
 
 -   `SubmitWithFunc`: submit a task with a handle function. `msg` is the handle function parameter. `fn` is the handle function. If `fn` is `nil`, the handle function will be `WithHandleFunc` to set.

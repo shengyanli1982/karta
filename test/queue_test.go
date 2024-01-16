@@ -38,3 +38,23 @@ func TestQueueSubmitWithLargeWorkers(t *testing.T) {
 
 	queue.Stop()
 }
+
+func TestQueueSubmitWithFuncWhenQueueClosed(t *testing.T) {
+	c := k.NewConfig()
+	c.WithHandleFunc(handleFunc).WithWorkerNumber(2)
+	q0 := workqueue.NewSimpleQueue(nil)
+
+	queue := k.NewQueue(q0, c)
+	assert.NotNil(t, queue)
+
+	queue.Stop()
+
+	err := queue.SubmitWithFunc(
+		func(msg any) (any, error) {
+			assert.Equal(t, 2, msg)
+			return msg, nil
+		}, 2,
+	)
+
+	assert.Equal(t, k.ErrorQueueClosed, err)
+}
