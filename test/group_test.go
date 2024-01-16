@@ -60,3 +60,14 @@ func TestGroupMapWithCallback(t *testing.T) {
 	_ = g.Map([]any{3, 5, 2})
 	g.Stop()
 }
+
+func TestGroupMapEmpty(t *testing.T) {
+	c := k.NewConfig()
+	c.WithHandleFunc(handleFunc).WithWorkerNumber(2).WithResult()
+
+	g := k.NewGroup(c)
+	assert.NotNil(t, g)
+	r0 := g.Map([]any{})
+	assert.Nil(t, r0)
+	g.Stop()
+}

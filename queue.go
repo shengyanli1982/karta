@@ -26,17 +26,17 @@ var elementExtPool = NewElementExtPool()
 // 队列接口
 // queue interface.
 type QInterface interface {
-	Add(element any) error
-	Get() (element any, err error)
-	Done(element any)
-	IsClosed() bool
+	Add(element any) error         // 添加元素 (add element)
+	Get() (element any, err error) // 获取元素 (get element)
+	Done(element any)              // 标记元素完成 (mark element done)
+	Stop()                         // 停止队列 (stop queue)
+	IsClosed() bool                // 判断队列是否已经关闭 (judge whether queue is closed)
 }
 
 // 队列
 // queue.
 type Queue struct {
 	queue  QInterface     // 工作队列，存放扩展元素
-	lock   sync.Mutex     // 锁
 	config *Config        // 配置
 	wg     sync.WaitGroup // 等待组
 	once   sync.Once
@@ -56,7 +56,6 @@ func NewQueue(queue QInterface, conf *Config) *Queue {
 	conf = isConfigValid(conf)
 	q := Queue{
 		queue:  queue,
-		lock:   sync.Mutex{},
 		config: conf,
 		wg:     sync.WaitGroup{},
 		once:   sync.Once{},
@@ -102,9 +101,7 @@ func (q *Queue) Stop() {
 	q.once.Do(func() {
 		q.cancel()
 		q.wg.Wait()
-		q.lock.Lock()
-		q.queue = nil
-		q.lock.Unlock()
+		q.queue.Stop()
 	})
 }
 
