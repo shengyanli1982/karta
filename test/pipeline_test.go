@@ -2,6 +2,7 @@ package test
 
 import (
 	"testing"
+	"time"
 
 	k "github.com/shengyanli1982/karta"
 	"github.com/shengyanli1982/workqueue"
@@ -115,8 +116,14 @@ func TestQueueSubmit_DelayingQueue(t *testing.T) {
 
 	pl := k.NewPipeline(queue, c)
 	assert.NotNil(t, pl)
+
 	err := pl.Submit(1)
 	assert.Nil(t, err)
+
+	err = pl.SubmitAfter(2, time.Second)
+	assert.Nil(t, err)
+
+	time.Sleep(2 * time.Second)
 
 	pl.Stop()
 }
@@ -128,8 +135,14 @@ func TestQueueSubmitWithCallback_DelayingQueue(t *testing.T) {
 
 	pl := k.NewPipeline(queue, c)
 	assert.NotNil(t, pl)
+
 	err := pl.Submit(1)
 	assert.Nil(t, err)
+
+	err = pl.SubmitAfter(2, time.Second)
+	assert.Nil(t, err)
+
+	time.Sleep(2 * time.Second)
 
 	pl.Stop()
 }
@@ -142,8 +155,14 @@ func TestQueueSubmitWithLargeWorkers_DelayingQueue(t *testing.T) {
 
 	pl := k.NewPipeline(queue, c)
 	assert.NotNil(t, pl)
+
 	err := pl.Submit(1)
 	assert.Nil(t, err)
+
+	err = pl.SubmitAfter(2, time.Second)
+	assert.Nil(t, err)
+
+	time.Sleep(2 * time.Second)
 
 	pl.Stop()
 }
@@ -156,6 +175,7 @@ func TestQueueSubmitWithCustomFunc_DelayingQueue(t *testing.T) {
 
 	pl := k.NewPipeline(queue, c)
 	assert.NotNil(t, pl)
+
 	err := pl.SubmitWithFunc(
 		func(msg any) (any, error) {
 			assert.Equal(t, 2, msg)
@@ -163,6 +183,14 @@ func TestQueueSubmitWithCustomFunc_DelayingQueue(t *testing.T) {
 		}, 2,
 	)
 	assert.Nil(t, err)
+
+	err = pl.SubmitAfterWithFunc(func(msg any) (any, error) {
+		assert.Equal(t, 3, msg)
+		return msg, nil
+	}, 3, time.Second)
+	assert.Nil(t, err)
+
+	time.Sleep(2 * time.Second)
 
 	pl.Stop()
 }
@@ -175,6 +203,7 @@ func TestQueueSubmitWithCustomFuncAndLargeWorkers_DelayingQueue(t *testing.T) {
 
 	pl := k.NewPipeline(queue, c)
 	assert.NotNil(t, pl)
+
 	err := pl.SubmitWithFunc(
 		func(msg any) (any, error) {
 			assert.Equal(t, 2, msg)
@@ -182,6 +211,14 @@ func TestQueueSubmitWithCustomFuncAndLargeWorkers_DelayingQueue(t *testing.T) {
 		}, 2,
 	)
 	assert.Nil(t, err)
+
+	err = pl.SubmitAfterWithFunc(func(msg any) (any, error) {
+		assert.Equal(t, 3, msg)
+		return msg, nil
+	}, 3, time.Second)
+	assert.Nil(t, err)
+
+	time.Sleep(2 * time.Second)
 
 	pl.Stop()
 }

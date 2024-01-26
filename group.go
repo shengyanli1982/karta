@@ -12,7 +12,7 @@ var elementPool = NewElementPool()
 // 批量处理任务
 // batch process task.
 type Group struct {
-	items  []*element     // 工作元素数组 (worker element array)
+	items  []*Element     // 工作元素数组 (worker element array)
 	lock   sync.Mutex     // 锁 (lock)
 	config *Config        // 配置 (configuration)
 	wg     sync.WaitGroup // 等待组 (wait group)
@@ -26,7 +26,7 @@ type Group struct {
 func NewGroup(conf *Config) *Group {
 	conf = isConfigValid(conf)
 	g := Group{
-		items:  []*element{},
+		items:  []*Element{},
 		lock:   sync.Mutex{},
 		config: conf,
 		wg:     sync.WaitGroup{},
@@ -57,7 +57,7 @@ func (g *Group) prepare(items []any) {
 
 	// 创建待处理的数据对象数组
 	// create data object array to be processed.
-	g.items = make([]*element, count)
+	g.items = make([]*Element, count)
 
 	// 创建工作元素
 	// create worker elements.

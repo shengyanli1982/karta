@@ -25,21 +25,18 @@ var (
 	defaultMinWorkerNum = int64(1)
 )
 
-// 扩展元素内存池
-// extended element pool.
-var elementExtPool = NewElementExtPool()
-
 // 管道
 // pipeline.
 type Pipeline struct {
-	queue  DelayingQueueInterface // The queue used for storing and processing data.
-	config *Config                // The configuration settings for the pipeline.
-	wg     sync.WaitGroup         // WaitGroup for managing goroutines.
-	once   sync.Once              // Sync.Once for ensuring initialization is performed only once.
-	ctx    context.Context        // The context for managing the lifecycle of the pipeline.
-	cancel context.CancelFunc     // The function for canceling the pipeline.
-	timer  atomic.Int64           // Atomic integer for tracking the pipeline's timer.
-	rc     atomic.Int64           // Atomic integer for tracking the pipeline's resource consumption.
+	queue       DelayingQueueInterface // The queue used for storing and processing data.
+	config      *Config                // The configuration settings for the pipeline.
+	wg          sync.WaitGroup         // WaitGroup for managing goroutines.
+	once        sync.Once              // Sync.Once for ensuring initialization is performed only once.
+	ctx         context.Context        // The context for managing the lifecycle of the pipeline.
+	cancel      context.CancelFunc     // The function for canceling the pipeline.
+	timer       atomic.Int64           // Atomic integer for tracking the pipeline's timer.
+	rc          atomic.Int64           // Atomic integer for tracking the pipeline's resource consumption.
+	elementpool *ElemmentExtPool       // The pool for managing extended elements.
 }
 
 // 创建一个新的管道
@@ -52,12 +49,13 @@ func NewPipeline(queue DelayingQueueInterface, conf *Config) *Pipeline {
 	}
 	conf = isConfigValid(conf)
 	pl := Pipeline{
-		queue:  queue,
-		config: conf,
-		wg:     sync.WaitGroup{},
-		once:   sync.Once{},
-		timer:  atomic.Int64{},
-		rc:     atomic.Int64{},
+		queue:       queue,
+		config:      conf,
+		wg:          sync.WaitGroup{},
+		once:        sync.Once{},
+		timer:       atomic.Int64{},
+		rc:          atomic.Int64{},
+		elementpool: NewElementExtPool(),
 	}
 	pl.ctx, pl.cancel = context.WithCancel(context.Background())
 	pl.timer.Store(time.Now().UnixMilli())
@@ -154,7 +152,11 @@ func (pl *Pipeline) executor() {
 
 			// 数据类型转换
 			// type conversion.
-			data := o.(*elementExt)
+			element := o.(*ElementExt)
+
+			// 获取数据
+			// get data.
+			data := element.GetData()
 
 			// 执行回调函数 OnBefore
 			// execute callback function OnBefore.
@@ -162,15 +164,15 @@ func (pl *Pipeline) executor() {
 
 			// 执行消息处理函数
 			// execute message handle function.
-			handleFunc := data.GetHandleFunc()
+			handleFunc := element.GetHandleFunc()
 
 			// 如果指定函数不为 nil，则执行消息处理函数。 否则使用 config 中的函数
 			// if handle function is not nil, execute it. otherwise use function in config.
 			var result any
 			if handleFunc != nil {
-				result, err = handleFunc(data.GetData())
+				result, err = handleFunc(data)
 			} else {
-				result, err = pl.config.handleFunc(data.GetData())
+				result, err = pl.config.handleFunc(data)
 			}
 
 			// 执行回调函数 OnAfter
@@ -179,7 +181,7 @@ func (pl *Pipeline) executor() {
 
 			// 将扩展元素放回对象池
 			// put extended element back to the pool.
-			elementExtPool.Put(data)
+			pl.elementpool.Put(element)
 		}
 	}
 }
@@ -193,7 +195,7 @@ func (pl *Pipeline) submit(fn MessageHandleFunc, msg any, delay time.Duration) e
 
 	// 从对象池中获取一个扩展元素
 	// get an extended element from the pool.
-	element := elementExtPool.Get()
+	element := pl.elementpool.Get()
 	element.SetData(msg)
 	element.SetHandleFunc(fn)
 
@@ -208,7 +210,7 @@ func (pl *Pipeline) submit(fn MessageHandleFunc, msg any, delay time.Duration) e
 	if err != nil {
 		// 如果添加失败，则将扩展元素放回对象池
 		// if add failed, put extended element back to the pool.
-		elementExtPool.Put(element)
+		pl.elementpool.Put(element)
 		return err
 	}
 

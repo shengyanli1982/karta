@@ -9,7 +9,7 @@ const (
 var (
 	// 默认的消息处理函数
 	// default message handle function.
-	defaultMsgHandleFunc = func(msg any) (any, error) { return nil, nil }
+	DefaultMsgHandleFunc = func(msg any) (any, error) { return msg, nil }
 )
 
 // 消息处理函数
@@ -31,7 +31,7 @@ func NewConfig() *Config {
 	return &Config{
 		num:        defaultWorkerNum,
 		callback:   NewEmptyCallback(),
-		handleFunc: defaultMsgHandleFunc,
+		handleFunc: DefaultMsgHandleFunc,
 	}
 }
 
@@ -80,7 +80,7 @@ func isConfigValid(conf *Config) *Config {
 			conf.callback = NewEmptyCallback()
 		}
 		if conf.handleFunc == nil {
-			conf.handleFunc = defaultMsgHandleFunc
+			conf.handleFunc = DefaultMsgHandleFunc
 		}
 	} else {
 		conf = DefaultConfig()
