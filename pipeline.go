@@ -154,32 +154,32 @@ func (pl *Pipeline) executor() {
 
 			// 数据类型转换
 			// type conversion.
-			d := o.(*elementExt)
+			data := o.(*elementExt)
 
 			// 执行回调函数 OnBefore
 			// execute callback function OnBefore.
-			pl.config.cb.OnBefore(d)
+			pl.config.callback.OnBefore(data)
 
 			// 执行消息处理函数
 			// execute message handle function.
-			h := d.GetHandleFunc()
+			handleFunc := data.GetHandleFunc()
 
 			// 如果指定函数不为 nil，则执行消息处理函数。 否则使用 config 中的函数
 			// if handle function is not nil, execute it. otherwise use function in config.
-			var r any
-			if h != nil {
-				r, err = h(d.GetData())
+			var result any
+			if handleFunc != nil {
+				result, err = handleFunc(data.GetData())
 			} else {
-				r, err = pl.config.h(d.GetData())
+				result, err = pl.config.handleFunc(data.GetData())
 			}
 
 			// 执行回调函数 OnAfter
 			// execute callback function OnAfter.
-			pl.config.cb.OnAfter(d, r, err)
+			pl.config.callback.OnAfter(data, result, err)
 
 			// 将扩展元素放回对象池
 			// put extended element back to the pool.
-			elementExtPool.Put(d)
+			elementExtPool.Put(data)
 		}
 	}
 }

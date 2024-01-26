@@ -22,6 +22,12 @@ func (emptyCallback) OnBefore(msg any) {}
 // OnAfter is called after message handle.
 func (emptyCallback) OnAfter(msg, result any, err error) {}
 
+// NewEmptyCallback 创建一个新的空回调函数
+// NewEmptyCallback creates a new empty callback function.
+func NewEmptyCallback() Callback {
+	return &emptyCallback{}
+}
+
 // QueueInterface 是队列接口
 // QueueInterface is queue interface
 type QueueInterface interface {

@@ -124,15 +124,15 @@ func (g *Group) execute() []any {
 
 					// 执行回调函数 OnBefore
 					// execute callback function OnBefore.
-					g.config.cb.OnBefore(d)
+					g.config.callback.OnBefore(d)
 
 					// 执行消息处理函数
 					// execute message handle function.
-					r, err := g.config.h(d)
+					r, err := g.config.handleFunc(d)
 
 					// 执行回调函数 OnAfter
 					// execute callback function OnAfter.
-					g.config.cb.OnAfter(d, r, err)
+					g.config.callback.OnAfter(d, r, err)
 
 					// 如果需要返回结果, 则将结果放入结果数组
 					// if need return result, put result into result array.
