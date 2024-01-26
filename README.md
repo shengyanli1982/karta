@@ -10,10 +10,10 @@
 
 Why `Karta`? In my job, I need to do a lot of job processing. I want to use like `ThreadPoolExecutor` code to do the job. However, in golang there is no such component. So I write one.
 
-`Karta` is very simple, it only has two processes: `Group` and `Queue`.
+`Karta` is very simple, it only has two processes: `Group` and `Pipeline`.
 
 -   `Group`: tasks batch processing by `Group`.
--   `Queue`: task one by one processing by `Queue`. Any task can specify a handle function.
+-   `Pipeline`: task one by one processing by `Pipeline`. Any task can specify a handle function.
 
 # Advantage
 
@@ -85,9 +85,9 @@ $ go run demo.go
 3
 ```
 
-#### 2. Queue
+#### 2. Pipeline
 
-`Queue` is a task processing component. It can be used to process tasks one by one. `Queue` use dynamic number of workers to process tasks, which means the number of workers will be decreased when there is no task to process and will be increased when there are tasks to process.
+`Pipeline` is a task processing component. It can be used to process tasks one by one. `Pipeline` use dynamic number of workers to process tasks, which means the number of workers will be decreased when there is no task to process and will be increased when there are tasks to process.
 
 If worker is idle, it will be closed after `defaultWorkerIdleTimeout` which is `10` seconds.
 
@@ -95,7 +95,7 @@ Long time idle, workers number will decrease to `defaultMinWorkerNum` which is `
 
 When `msg` posted by `Submit` or `SubmitWithFunc`, it will be processed by the idle worker. If there is no idle worker, a new worker will be created to process the `msg`. The number of running workers will be increased to value which set by config `WithWorkerNumber` method if the number of running workers is not enough.
 
-`Queue` need a queue object to store tasks. The queue object must implement `QInterface` interface.
+`Pipeline` need a queue object to store tasks. The queue object must implement `QInterface` interface.
 
 ```go
 // queue interface.
@@ -134,16 +134,16 @@ func handleFunc(msg any) (any, error) {
 func main() {
 	c := k.NewConfig()
 	c.WithHandleFunc(handleFunc).WithWorkerNumber(2)
-	q0 := workqueue.NewSimpleQueue(nil)
-	q := k.NewQueue(q0, c)
+	queue := workqueue.NewSimpleQueue(nil)
+	pl := k.NewPipeline(queue, c)
 
 	defer func() {
-		q.Stop()
-		q0.Stop()
+		pl.Stop()
+		queue.Stop()
 	}()
 
-	_ = q.Submit("foo")
-	_ = q.SubmitWithFunc(func(msg any) (any, error) {
+	_ = pl.Submit("foo")
+	_ = pl.SubmitWithFunc(func(msg any) (any, error) {
 		fmt.Println("SpecFunc:", msg)
 		return msg, nil
 	}, "bar")

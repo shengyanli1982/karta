@@ -11,24 +11,24 @@ import (
 func TestQueueSubmit(t *testing.T) {
 	c := k.NewConfig()
 	c.WithHandleFunc(handleFunc).WithWorkerNumber(2)
-	q0 := workqueue.NewSimpleQueue(nil)
+	queue := workqueue.NewSimpleQueue(nil)
 
-	queue := k.NewQueue(q0, c)
-	assert.NotNil(t, queue)
-	err := queue.Submit(1)
+	pl := k.NewPipeline(queue, c)
+	assert.NotNil(t, pl)
+	err := pl.Submit(1)
 	assert.Nil(t, err)
 
-	queue.Stop()
+	pl.Stop()
 }
 
 func TestQueueSubmitWithLargeWorkers(t *testing.T) {
 	c := k.NewConfig()
 	c.WithHandleFunc(handleFunc).WithWorkerNumber(2)
-	q0 := workqueue.NewSimpleQueue(nil)
+	queue := workqueue.NewSimpleQueue(nil)
 
-	queue := k.NewQueue(q0, c)
-	assert.NotNil(t, queue)
-	err := queue.SubmitWithFunc(
+	pl := k.NewPipeline(queue, c)
+	assert.NotNil(t, pl)
+	err := pl.SubmitWithFunc(
 		func(msg any) (any, error) {
 			assert.Equal(t, 2, msg)
 			return msg, nil
@@ -36,20 +36,20 @@ func TestQueueSubmitWithLargeWorkers(t *testing.T) {
 	)
 	assert.Nil(t, err)
 
-	queue.Stop()
+	pl.Stop()
 }
 
 func TestQueueSubmitWithFuncWhenQueueClosed(t *testing.T) {
 	c := k.NewConfig()
 	c.WithHandleFunc(handleFunc).WithWorkerNumber(2)
-	q0 := workqueue.NewSimpleQueue(nil)
+	queue := workqueue.NewSimpleQueue(nil)
 
-	queue := k.NewQueue(q0, c)
-	assert.NotNil(t, queue)
+	pl := k.NewPipeline(queue, c)
+	assert.NotNil(t, pl)
 
-	queue.Stop()
+	pl.Stop()
 
-	err := queue.SubmitWithFunc(
+	err := pl.SubmitWithFunc(
 		func(msg any) (any, error) {
 			assert.Equal(t, 2, msg)
 			return msg, nil
