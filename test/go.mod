@@ -6,7 +6,7 @@ replace github.com/shengyanli1982/karta => ../
 
 require (
 	github.com/shengyanli1982/karta v0.0.0-00010101000000-000000000000
-	github.com/shengyanli1982/workqueue v0.1.3
+	github.com/shengyanli1982/workqueue v0.1.4
 	github.com/stretchr/testify v1.8.4
 )
 
