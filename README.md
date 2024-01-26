@@ -95,16 +95,17 @@ Long time idle, workers number will decrease to `defaultMinWorkerNum` which is `
 
 When `msg` posted by `Submit` or `SubmitWithFunc`, it will be processed by the idle worker. If there is no idle worker, a new worker will be created to process the `msg`. The number of running workers will be increased to value which set by config `WithWorkerNumber` method if the number of running workers is not enough.
 
-`Pipeline` need a queue object to store tasks. The queue object must implement `QInterface` interface.
+`Pipeline` need a queue object to store tasks. The queue object must implement `QueueInterface` interface.
 
 ```go
-// queue interface.
-type QInterface interface {
+// 管道接口
+// pipeline interface.
+type QueueInterface interface {
 	Add(element any) error         // 添加元素 (add element)
 	Get() (element any, err error) // 获取元素 (get element)
 	Done(element any)              // 标记元素完成 (mark element done)
-	Stop()                         // 停止队列 (stop queue)
-	IsClosed() bool                // 判断队列是否已经关闭 (judge whether queue is closed)
+	Stop()                         // 停止管道 (stop pipeline)
+	IsClosed() bool                // 判断管道是否已经关闭 (judge whether pipeline is closed)
 }
 ```
 
