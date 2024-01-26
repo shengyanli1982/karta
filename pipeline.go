@@ -8,7 +8,12 @@ import (
 	"time"
 )
 
+// 立即执行
+// immediate execute.
+const immediate = time.Duration(0)
+
 var (
+	// 管道已经关闭 (pipeline is closed)
 	ErrorQueueClosed = errors.New("pipeline is closed")
 )
 
@@ -20,48 +25,37 @@ var (
 	defaultMinWorkerNum = int64(1)
 )
 
-// 扩展元素内存池
-// extended element pool.
-var elementExtPool = NewElementExtPool()
-
-// 管道接口
-// pipeline interface.
-type QueueInterface interface {
-	Add(element any) error         // 添加元素 (add element)
-	Get() (element any, err error) // 获取元素 (get element)
-	Done(element any)              // 标记元素完成 (mark element done)
-	Stop()                         // 停止管道 (stop pipeline)
-	IsClosed() bool                // 判断管道是否已经关闭 (judge whether pipeline is closed)
-}
-
 // 管道
 // pipeline.
 type Pipeline struct {
-	queue  QueueInterface // 工作管道，存放扩展元素
-	config *Config        // 配置
-	wg     sync.WaitGroup // 等待组
-	once   sync.Once
-	ctx    context.Context
-	cancel context.CancelFunc
-	timer  atomic.Int64
-	rc     atomic.Int64 // 正在运行 Worker 的数量
+	queue       DelayingQueueInterface // The queue used for storing and processing data.
+	config      *Config                // The configuration settings for the pipeline.
+	wg          sync.WaitGroup         // WaitGroup for managing goroutines.
+	once        sync.Once              // Sync.Once for ensuring initialization is performed only once.
+	ctx         context.Context        // The context for managing the lifecycle of the pipeline.
+	cancel      context.CancelFunc     // The function for canceling the pipeline.
+	timer       atomic.Int64           // Atomic integer for tracking the pipeline's timer.
+	rc          atomic.Int64           // Atomic integer for tracking the pipeline's resource consumption.
+	elementpool *ElemmentExtPool       // The pool for managing extended elements.
 }
 
 // 创建一个新的管道
 // create a new pipeline.
-func NewPipeline(queue QueueInterface, conf *Config) *Pipeline {
+func NewPipeline(queue DelayingQueueInterface, conf *Config) *Pipeline {
 	// 如果 pipeline 为 nil, 则返回 nil
+	// if pipeline is nil, return nil.
 	if queue == nil {
 		return nil
 	}
 	conf = isConfigValid(conf)
 	pl := Pipeline{
-		queue:  queue,
-		config: conf,
-		wg:     sync.WaitGroup{},
-		once:   sync.Once{},
-		timer:  atomic.Int64{},
-		rc:     atomic.Int64{},
+		queue:       queue,
+		config:      conf,
+		wg:          sync.WaitGroup{},
+		once:        sync.Once{},
+		timer:       atomic.Int64{},
+		rc:          atomic.Int64{},
+		elementpool: NewElementExtPool(),
 	}
 	pl.ctx, pl.cancel = context.WithCancel(context.Background())
 	pl.timer.Store(time.Now().UnixMilli())
@@ -158,57 +152,68 @@ func (pl *Pipeline) executor() {
 
 			// 数据类型转换
 			// type conversion.
-			d := o.(*elementExt)
+			element := o.(*ElementExt)
+
+			// 获取数据
+			// get data.
+			data := element.GetData()
 
 			// 执行回调函数 OnBefore
 			// execute callback function OnBefore.
-			pl.config.cb.OnBefore(d)
+			pl.config.callback.OnBefore(data)
 
 			// 执行消息处理函数
 			// execute message handle function.
-			h := d.GetHandleFunc()
+			handleFunc := element.GetHandleFunc()
 
 			// 如果指定函数不为 nil，则执行消息处理函数。 否则使用 config 中的函数
 			// if handle function is not nil, execute it. otherwise use function in config.
-			var r any
-			if h != nil {
-				r, err = h(d.GetData())
+			var result any
+			if handleFunc != nil {
+				result, err = handleFunc(data)
 			} else {
-				r, err = pl.config.h(d.GetData())
+				result, err = pl.config.handleFunc(data)
 			}
 
 			// 执行回调函数 OnAfter
 			// execute callback function OnAfter.
-			pl.config.cb.OnAfter(d, r, err)
+			pl.config.callback.OnAfter(data, result, err)
 
 			// 将扩展元素放回对象池
 			// put extended element back to the pool.
-			elementExtPool.Put(d)
+			pl.elementpool.Put(element)
 		}
 	}
 }
 
-// 提交带有自定义处理函数的任务
-// submit task with custom handle function.
-func (pl *Pipeline) SubmitWithFunc(fn MessageHandleFunc, msg any) error {
+func (pl *Pipeline) submit(fn MessageHandleFunc, msg any, delay time.Duration) error {
 	// 如果管道已经关闭，则返回错误
 	// if pipeline is closed, return error.
 	if pl.queue.IsClosed() {
 		return ErrorQueueClosed
 	}
+
 	// 从对象池中获取一个扩展元素
 	// get an extended element from the pool.
-	e := elementExtPool.Get()
-	e.SetData(msg)
-	e.SetHandleFunc(fn)
-	// 将扩展元素添加到工作管道中
-	// add extended element to the pipeline.
-	if err := pl.queue.Add(e); err != nil {
+	element := pl.elementpool.Get()
+	element.SetData(msg)
+	element.SetHandleFunc(fn)
+
+	// 将扩展元素添加到工作管道中, 如果延迟大于 0, 则添加到延迟队列中
+	// add extended element to the pipeline, if delay greater than 0, add to delay queue.
+	var err error
+	if delay > 0 {
+		err = pl.queue.AddAfter(element, delay)
+	} else {
+		err = pl.queue.Add(element)
+	}
+	if err != nil {
 		// 如果添加失败，则将扩展元素放回对象池
 		// if add failed, put extended element back to the pool.
-		elementExtPool.Put(e)
+		pl.elementpool.Put(element)
 		return err
 	}
+
 	// 判断当前工作管道中的任务数量是否超足够, 如果不足则启动一个新的工作者
 	// if number of tasks in the pipeline is not enough, start a new worker.
 	if int64(pl.config.num) > pl.rc.Load() {
@@ -216,13 +221,32 @@ func (pl *Pipeline) SubmitWithFunc(fn MessageHandleFunc, msg any) error {
 		pl.wg.Add(1)
 		go pl.executor()
 	}
+
 	// 正确执行，返回 nil
 	// execute correctly, return nil.
 	return nil
+}
+
+// 提交带有自定义处理函数的任务
+// submit task with custom handle function.
+func (pl *Pipeline) SubmitWithFunc(fn MessageHandleFunc, msg any) error {
+	return pl.submit(fn, msg, immediate)
 }
 
 // 提交任务
 // submit task.
 func (pl *Pipeline) Submit(msg any) error {
 	return pl.SubmitWithFunc(nil, msg)
+}
+
+// 延迟指定时间提交带有自定义处理函数的任务
+// submit task with custom handle function after delay.
+func (pl *Pipeline) SubmitAfterWithFunc(fn MessageHandleFunc, msg any, delay time.Duration) error {
+	return pl.submit(fn, msg, delay)
+}
+
+// 延迟指定时间提交任务
+// submit task after delay.
+func (pl *Pipeline) SubmitAfter(msg any, delay time.Duration) error {
+	return pl.SubmitAfterWithFunc(nil, msg, delay)
 }

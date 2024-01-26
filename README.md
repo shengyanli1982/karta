@@ -50,6 +50,11 @@ go get github.com/shengyanli1982/karta
 
 -   `Map`: batch process tasks by given a slice of objects, each object is handle func parameter. The method will return a slice of results which use `WithResult` to set `true`.
 
+**Callback**
+
+-   `OnBefore` : callback function before task processing.
+-   `OnAfter` : callback function after task processing.
+
 **Example**
 
 ```go
@@ -95,7 +100,7 @@ Long time idle, workers number will decrease to `defaultMinWorkerNum` which is `
 
 When `msg` posted by `Submit` or `SubmitWithFunc`, it will be processed by the idle worker. If there is no idle worker, a new worker will be created to process the `msg`. The number of running workers will be increased to value which set by config `WithWorkerNumber` method if the number of running workers is not enough.
 
-`Pipeline` need a queue object to store tasks. The queue object must implement `QueueInterface` interface.
+`Pipeline` need a queue object to store tasks. The queue object must implement `DelayingQueueInterface` interface.
 
 ```go
 // 管道接口
@@ -107,12 +112,27 @@ type QueueInterface interface {
 	Stop()                         // 停止管道 (stop pipeline)
 	IsClosed() bool                // 判断管道是否已经关闭 (judge whether pipeline is closed)
 }
+
+// DelayingQueueInterface 包含延迟队列接口的定义
+// DelayingQueueInterface is delaying queue interface
+type DelayingQueueInterface interface {
+	QueueInterface
+	AddAfter(element any, delay time.Duration) error // 将元素添加到队列中，并在指定的延迟后立即可用 (add an element to the queue, making it available after the specified delay)
+}
 ```
 
 **Methods**
 
--   `SubmitWithFunc`: submit a task with a handle function. `msg` is the handle function parameter. `fn` is the handle function. If `fn` is `nil`, the handle function will be `WithHandleFunc` to set.
--   `Submit`: submit a task without a handle function. `msg` is the handle function parameter. The handle function will be `WithHandleFunc` to set.
+-   `SubmitWithFunc` : submit a task with a handle function. `msg` is the handle function parameter. `fn` is the handle function. If `fn` is `nil`, the handle function will be `WithHandleFunc` to set.
+-   `Submit` : submit a task without a handle function. `msg` is the handle function parameter. The handle function will be `WithHandleFunc` to set.
+-   `SubmitAfterWithFunc` : submit a task with a handle function after a delay. `msg` is the handle function parameter. `fn` is the handle function. If `fn` is `nil`, the handle function will be `WithHandleFunc` to set. `delay` is the delay time (`time.Duration`).
+-   `SubmitAfter` : submit a task without a handle function after a delay. `msg` is the handle function parameter. The handle function will be `WithHandleFunc` to set. `delay` is the delay time (`time.Duration`).
+-   `Stop` : stop the pipeline.
+
+**Callback**
+
+-   `OnBefore` : callback function before task processing.
+-   `OnAfter` : callback function after task processing.
 
 **Example**
 
@@ -135,7 +155,7 @@ func handleFunc(msg any) (any, error) {
 func main() {
 	c := k.NewConfig()
 	c.WithHandleFunc(handleFunc).WithWorkerNumber(2)
-	queue := workqueue.NewSimpleQueue(nil)
+	queue := k.NewFakeDelayingQueue(workqueue.NewSimpleQueue(nil))
 	pl := k.NewPipeline(queue, c)
 
 	defer func() {

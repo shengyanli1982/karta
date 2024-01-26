@@ -9,41 +9,29 @@ const (
 var (
 	// 默认的消息处理函数
 	// default message handle function.
-	defaultMsgHandleFunc = func(msg any) (any, error) { return nil, nil }
+	DefaultMsgHandleFunc = func(msg any) (any, error) { return msg, nil }
 )
 
 // 消息处理函数
 // message handle function.
 type MessageHandleFunc func(msg any) (any, error)
 
-// 回调函数
-// callback function.
-type Callback interface {
-	OnBefore(msg any)                   // 在消息处理前调用
-	OnAfter(msg, result any, err error) // 在消息处理后调用
-}
-
-type emptyCallback struct{}
-
-func (emptyCallback) OnBefore(msg any)                   {}
-func (emptyCallback) OnAfter(msg, result any, err error) {}
-
 // 配置
 // config.
 type Config struct {
-	num    int               // number of workers
-	cb     Callback          // callback
-	result bool              // return result
-	h      MessageHandleFunc // message handle function
+	num        int               // number of workers
+	callback   Callback          // callback
+	result     bool              // return result
+	handleFunc MessageHandleFunc // message handle function
 }
 
 // 创建一个新的配置
 // create a new config.
 func NewConfig() *Config {
 	return &Config{
-		num: defaultWorkerNum,
-		cb:  &emptyCallback{},
-		h:   defaultMsgHandleFunc,
+		num:        defaultWorkerNum,
+		callback:   NewEmptyCallback(),
+		handleFunc: DefaultMsgHandleFunc,
 	}
 }
 
@@ -57,14 +45,14 @@ func (c *Config) WithWorkerNumber(num int) *Config {
 // 设置回调函数
 // set callback function.
 func (c *Config) WithCallback(cb Callback) *Config {
-	c.cb = cb
+	c.callback = cb
 	return c
 }
 
 // 设置消息处理函数
 // set message handle function.
 func (c *Config) WithHandleFunc(h MessageHandleFunc) *Config {
-	c.h = h
+	c.handleFunc = h
 	return c
 }
 
@@ -88,14 +76,14 @@ func isConfigValid(conf *Config) *Config {
 		if conf.num <= 0 {
 			conf.num = defaultWorkerNum
 		}
-		if conf.cb == nil {
-			conf.cb = &emptyCallback{}
+		if conf.callback == nil {
+			conf.callback = NewEmptyCallback()
 		}
-		if conf.h == nil {
-			conf.h = defaultMsgHandleFunc
+		if conf.handleFunc == nil {
+			conf.handleFunc = DefaultMsgHandleFunc
 		}
 	} else {
-		conf = NewConfig()
+		conf = DefaultConfig()
 	}
 
 	return conf
