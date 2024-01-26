@@ -8,11 +8,13 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
+// handleFunc is a handle function.
 func handleFunc(msg any) (any, error) {
 	time.Sleep(time.Duration(msg.(int)) * time.Millisecond * 100)
 	return msg, nil
 }
 
+// callback is a callback.
 type callback struct {
 	t *testing.T
 }
@@ -24,6 +26,7 @@ func (c *callback) OnAfter(msg, result any, err error) {
 	assert.Nil(c.t, err)
 }
 
+// TestGroupMap tests group map.
 func TestGroupMap(t *testing.T) {
 	c := k.NewConfig()
 	c.WithHandleFunc(handleFunc).WithWorkerNumber(2).WithResult()
@@ -38,6 +41,7 @@ func TestGroupMap(t *testing.T) {
 	g.Stop()
 }
 
+// TestGroupMapWithLargeWorkers tests group map with large workers.
 func TestGroupMapWithLargeWorkers(t *testing.T) {
 	c := k.NewConfig()
 	c.WithHandleFunc(handleFunc).WithWorkerNumber(200).WithResult()
@@ -51,6 +55,7 @@ func TestGroupMapWithLargeWorkers(t *testing.T) {
 	g.Stop()
 }
 
+// TestGroupMapWithCallback tests group map with callback.
 func TestGroupMapWithCallback(t *testing.T) {
 	c := k.NewConfig()
 	c.WithHandleFunc(handleFunc).WithCallback(&callback{t: t})
@@ -61,6 +66,7 @@ func TestGroupMapWithCallback(t *testing.T) {
 	g.Stop()
 }
 
+// TestGroupMapWithFunc tests group map with func.
 func TestGroupMapEmpty(t *testing.T) {
 	c := k.NewConfig()
 	c.WithHandleFunc(handleFunc).WithWorkerNumber(2).WithResult()

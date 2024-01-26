@@ -15,6 +15,7 @@ var (
 var (
 	// 默认的工作者空闲超时时间, 10 秒 (default worker idle timeout, 10 seconds)
 	defaultWorkerIdleTimeout = (10 * time.Second).Milliseconds()
+
 	// 默认的最小工作者数量 (default minimum number of workers)
 	defaultMinWorkerNum = int64(1)
 )
@@ -25,7 +26,7 @@ var elementExtPool = NewElementExtPool()
 
 // 管道接口
 // pipeline interface.
-type QInterface interface {
+type QueueInterface interface {
 	Add(element any) error         // 添加元素 (add element)
 	Get() (element any, err error) // 获取元素 (get element)
 	Done(element any)              // 标记元素完成 (mark element done)
@@ -36,7 +37,7 @@ type QInterface interface {
 // 管道
 // pipeline.
 type Pipeline struct {
-	queue  QInterface     // 工作管道，存放扩展元素
+	queue  QueueInterface // 工作管道，存放扩展元素
 	config *Config        // 配置
 	wg     sync.WaitGroup // 等待组
 	once   sync.Once
@@ -48,7 +49,7 @@ type Pipeline struct {
 
 // 创建一个新的管道
 // create a new pipeline.
-func NewPipeline(queue QInterface, conf *Config) *Pipeline {
+func NewPipeline(queue QueueInterface, conf *Config) *Pipeline {
 	// 如果 pipeline 为 nil, 则返回 nil
 	if queue == nil {
 		return nil
@@ -74,6 +75,7 @@ func NewPipeline(queue QInterface, conf *Config) *Pipeline {
 	}
 
 	// 启动时间定时器
+	// start time timer.
 	pl.wg.Add(1)
 	go func() {
 		ticker := time.NewTicker(time.Second)
@@ -125,49 +127,60 @@ func (pl *Pipeline) executor() {
 		select {
 		case <-pl.ctx.Done():
 			return
+
 		case <-ticker.C:
 			// 如果空闲超时，则判断当前工作者数量是否超过最小工作者数量，如果超过则返回
 			// if idle timeout, judge whether number of workers is greater than minimum number of workers, if greater than, return.
 			if pl.timer.Load()-updateAt >= defaultWorkerIdleTimeout && pl.rc.Load() > defaultMinWorkerNum {
 				return
 			}
+
 		default:
 			// 更新时间
 			updateAt = pl.timer.Load()
+
 			// 如果管道已经关闭，则返回
 			// if pipeline is closed, return.
 			if pl.queue.IsClosed() {
 				return
 			}
+
 			// 从工作管道中获取一个扩展元素
 			// get an extended element from the pipeline.
 			o, err := pl.queue.Get()
 			if err != nil {
 				break
 			}
+
 			// 工作管道标记完成
 			// mark element done.
 			pl.queue.Done(o)
+
 			// 数据类型转换
 			// type conversion.
 			d := o.(*elementExt)
+
 			// 执行回调函数 OnBefore
 			// execute callback function OnBefore.
 			pl.config.cb.OnBefore(d)
+
 			// 执行消息处理函数
 			// execute message handle function.
 			h := d.GetHandleFunc()
-			var r any
+
 			// 如果指定函数不为 nil，则执行消息处理函数。 否则使用 config 中的函数
 			// if handle function is not nil, execute it. otherwise use function in config.
+			var r any
 			if h != nil {
 				r, err = h(d.GetData())
 			} else {
 				r, err = pl.config.h(d.GetData())
 			}
+
 			// 执行回调函数 OnAfter
 			// execute callback function OnAfter.
 			pl.config.cb.OnAfter(d, r, err)
+
 			// 将扩展元素放回对象池
 			// put extended element back to the pool.
 			elementExtPool.Put(d)
