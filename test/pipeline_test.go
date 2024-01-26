@@ -12,7 +12,20 @@ import (
 func TestQueueSubmit(t *testing.T) {
 	c := k.NewConfig()
 	c.WithHandleFunc(handleFunc).WithWorkerNumber(2)
-	queue := workqueue.NewSimpleQueue(nil)
+	queue := k.NewFakeDelayingQueue(workqueue.NewSimpleQueue(nil))
+
+	pl := k.NewPipeline(queue, c)
+	assert.NotNil(t, pl)
+	err := pl.Submit(1)
+	assert.Nil(t, err)
+
+	pl.Stop()
+}
+
+func TestQueueSubmitWithCallback(t *testing.T) {
+	c := k.NewConfig()
+	c.WithHandleFunc(handleFunc).WithWorkerNumber(2).WithCallback(&callback{t: t})
+	queue := k.NewFakeDelayingQueue(workqueue.NewSimpleQueue(nil))
 
 	pl := k.NewPipeline(queue, c)
 	assert.NotNil(t, pl)
@@ -26,7 +39,7 @@ func TestQueueSubmit(t *testing.T) {
 func TestQueueSubmitWithLargeWorkers(t *testing.T) {
 	c := k.NewConfig()
 	c.WithHandleFunc(handleFunc).WithWorkerNumber(200)
-	queue := workqueue.NewSimpleQueue(nil)
+	queue := k.NewFakeDelayingQueue(workqueue.NewSimpleQueue(nil))
 
 	pl := k.NewPipeline(queue, c)
 	assert.NotNil(t, pl)
@@ -40,7 +53,7 @@ func TestQueueSubmitWithLargeWorkers(t *testing.T) {
 func TestQueueSubmitWithCustomFunc(t *testing.T) {
 	c := k.NewConfig()
 	c.WithHandleFunc(handleFunc).WithWorkerNumber(2)
-	queue := workqueue.NewSimpleQueue(nil)
+	queue := k.NewFakeDelayingQueue(workqueue.NewSimpleQueue(nil))
 
 	pl := k.NewPipeline(queue, c)
 	assert.NotNil(t, pl)
@@ -59,7 +72,7 @@ func TestQueueSubmitWithCustomFunc(t *testing.T) {
 func TestQueueSubmitWithCustomFuncAndLargeWorkers(t *testing.T) {
 	c := k.NewConfig()
 	c.WithHandleFunc(handleFunc).WithWorkerNumber(200)
-	queue := workqueue.NewSimpleQueue(nil)
+	queue := k.NewFakeDelayingQueue(workqueue.NewSimpleQueue(nil))
 
 	pl := k.NewPipeline(queue, c)
 	assert.NotNil(t, pl)
@@ -78,7 +91,106 @@ func TestQueueSubmitWithCustomFuncAndLargeWorkers(t *testing.T) {
 func TestQueueSubmitWithFuncWhenQueueClosed(t *testing.T) {
 	c := k.NewConfig()
 	c.WithHandleFunc(handleFunc).WithWorkerNumber(2)
-	queue := workqueue.NewSimpleQueue(nil)
+	queue := k.NewFakeDelayingQueue(workqueue.NewSimpleQueue(nil))
+
+	pl := k.NewPipeline(queue, c)
+	assert.NotNil(t, pl)
+
+	pl.Stop()
+
+	err := pl.SubmitWithFunc(
+		func(msg any) (any, error) {
+			assert.Equal(t, 2, msg)
+			return msg, nil
+		}, 2,
+	)
+
+	assert.Equal(t, k.ErrorQueueClosed, err)
+}
+
+func TestQueueSubmit_DelayingQueue(t *testing.T) {
+	c := k.NewConfig()
+	c.WithHandleFunc(handleFunc).WithWorkerNumber(2)
+	queue := workqueue.NewDelayingQueue(nil)
+
+	pl := k.NewPipeline(queue, c)
+	assert.NotNil(t, pl)
+	err := pl.Submit(1)
+	assert.Nil(t, err)
+
+	pl.Stop()
+}
+
+func TestQueueSubmitWithCallback_DelayingQueue(t *testing.T) {
+	c := k.NewConfig()
+	c.WithHandleFunc(handleFunc).WithWorkerNumber(2).WithCallback(&callback{t: t})
+	queue := k.NewFakeDelayingQueue(workqueue.NewSimpleQueue(nil))
+
+	pl := k.NewPipeline(queue, c)
+	assert.NotNil(t, pl)
+	err := pl.Submit(1)
+	assert.Nil(t, err)
+
+	pl.Stop()
+}
+
+// TestQueueSubmitWithLargeWorkers tests queue submit with large workers.
+func TestQueueSubmitWithLargeWorkers_DelayingQueue(t *testing.T) {
+	c := k.NewConfig()
+	c.WithHandleFunc(handleFunc).WithWorkerNumber(200)
+	queue := workqueue.NewDelayingQueue(nil)
+
+	pl := k.NewPipeline(queue, c)
+	assert.NotNil(t, pl)
+	err := pl.Submit(1)
+	assert.Nil(t, err)
+
+	pl.Stop()
+}
+
+// TestQueueSubmitWithCustomFunc tests queue submit with custom func.
+func TestQueueSubmitWithCustomFunc_DelayingQueue(t *testing.T) {
+	c := k.NewConfig()
+	c.WithHandleFunc(handleFunc).WithWorkerNumber(2)
+	queue := workqueue.NewDelayingQueue(nil)
+
+	pl := k.NewPipeline(queue, c)
+	assert.NotNil(t, pl)
+	err := pl.SubmitWithFunc(
+		func(msg any) (any, error) {
+			assert.Equal(t, 2, msg)
+			return msg, nil
+		}, 2,
+	)
+	assert.Nil(t, err)
+
+	pl.Stop()
+}
+
+// TestQueueSubmitWithCustomFuncAndLargeWorkers tests queue submit with custom func and large workers.
+func TestQueueSubmitWithCustomFuncAndLargeWorkers_DelayingQueue(t *testing.T) {
+	c := k.NewConfig()
+	c.WithHandleFunc(handleFunc).WithWorkerNumber(200)
+	queue := workqueue.NewDelayingQueue(nil)
+
+	pl := k.NewPipeline(queue, c)
+	assert.NotNil(t, pl)
+	err := pl.SubmitWithFunc(
+		func(msg any) (any, error) {
+			assert.Equal(t, 2, msg)
+			return msg, nil
+		}, 2,
+	)
+	assert.Nil(t, err)
+
+	pl.Stop()
+}
+
+// TestQueueSubmitWithFuncWhenQueueClosed tests queue submit with func when queue closed.
+func TestQueueSubmitWithFuncWhenQueueClosed_DelayingQueue(t *testing.T) {
+	c := k.NewConfig()
+	c.WithHandleFunc(handleFunc).WithWorkerNumber(2)
+	queue := workqueue.NewDelayingQueue(nil)
 
 	pl := k.NewPipeline(queue, c)
 	assert.NotNil(t, pl)

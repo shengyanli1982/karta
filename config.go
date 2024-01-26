@@ -16,18 +16,6 @@ var (
 // message handle function.
 type MessageHandleFunc func(msg any) (any, error)
 
-// 回调函数
-// callback function.
-type Callback interface {
-	OnBefore(msg any)                   // 在消息处理前调用
-	OnAfter(msg, result any, err error) // 在消息处理后调用
-}
-
-type emptyCallback struct{}
-
-func (emptyCallback) OnBefore(msg any)                   {}
-func (emptyCallback) OnAfter(msg, result any, err error) {}
-
 // 配置
 // config.
 type Config struct {
