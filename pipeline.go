@@ -9,6 +9,7 @@ import (
 )
 
 var (
+	// 管道已经关闭 (pipeline is closed)
 	ErrorQueueClosed = errors.New("pipeline is closed")
 )
 
@@ -51,6 +52,7 @@ type Pipeline struct {
 // create a new pipeline.
 func NewPipeline(queue QueueInterface, conf *Config) *Pipeline {
 	// 如果 pipeline 为 nil, 则返回 nil
+	// if pipeline is nil, return nil.
 	if queue == nil {
 		return nil
 	}
@@ -196,11 +198,13 @@ func (pl *Pipeline) SubmitWithFunc(fn MessageHandleFunc, msg any) error {
 	if pl.queue.IsClosed() {
 		return ErrorQueueClosed
 	}
+
 	// 从对象池中获取一个扩展元素
 	// get an extended element from the pool.
 	e := elementExtPool.Get()
 	e.SetData(msg)
 	e.SetHandleFunc(fn)
+
 	// 将扩展元素添加到工作管道中
 	// add extended element to the pipeline.
 	if err := pl.queue.Add(e); err != nil {
@@ -209,6 +213,7 @@ func (pl *Pipeline) SubmitWithFunc(fn MessageHandleFunc, msg any) error {
 		elementExtPool.Put(e)
 		return err
 	}
+
 	// 判断当前工作管道中的任务数量是否超足够, 如果不足则启动一个新的工作者
 	// if number of tasks in the pipeline is not enough, start a new worker.
 	if int64(pl.config.num) > pl.rc.Load() {
@@ -216,6 +221,7 @@ func (pl *Pipeline) SubmitWithFunc(fn MessageHandleFunc, msg any) error {
 		pl.wg.Add(1)
 		go pl.executor()
 	}
+
 	// 正确执行，返回 nil
 	// execute correctly, return nil.
 	return nil
