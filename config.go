@@ -14,7 +14,7 @@ var (
 
 // 消息处理函数
 // message handle function.
-type MessageHandleFunc func(msg any) (any, error)
+type MessageHandleFunc = func(msg any) (any, error)
 
 // 配置
 // config.
