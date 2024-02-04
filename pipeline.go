@@ -13,15 +13,18 @@ import (
 const immediate = time.Duration(0)
 
 var (
-	// 管道已经关闭 (pipeline is closed)
+	// 管道已经关闭
+	// pipeline is closed
 	ErrorQueueClosed = errors.New("pipeline is closed")
 )
 
 var (
-	// 默认的工作者空闲超时时间, 10 秒 (default worker idle timeout, 10 seconds)
+	// 默认的工作者空闲超时时间, 10 秒
+	// default worker idle timeout, 10 seconds
 	defaultWorkerIdleTimeout = (10 * time.Second).Milliseconds()
 
-	// 默认的最小工作者数量 (default minimum number of workers)
+	// 默认的最小工作者数量
+	// default minimum number of workers
 	defaultMinWorkerNum = int64(1)
 )
 
@@ -71,22 +74,7 @@ func NewPipeline(queue DelayingQueueInterface, conf *Config) *Pipeline {
 	// 启动时间定时器
 	// start time timer.
 	pl.wg.Add(1)
-	go func() {
-		ticker := time.NewTicker(time.Second)
-		defer func() {
-			ticker.Stop()
-			pl.wg.Done()
-		}()
-
-		for {
-			select {
-			case <-pl.ctx.Done():
-				return
-			case <-ticker.C:
-				pl.timer.Store(time.Now().UnixMilli())
-			}
-		}
-	}()
+	go pl.updateTimer()
 
 	return &pl
 }
@@ -249,4 +237,24 @@ func (pl *Pipeline) SubmitAfterWithFunc(fn MessageHandleFunc, msg any, delay tim
 // submit task after delay.
 func (pl *Pipeline) SubmitAfter(msg any, delay time.Duration) error {
 	return pl.SubmitAfterWithFunc(nil, msg, delay)
+}
+
+// updateTimer 是一个定时器，用于更新 Pipeline 的时间戳
+// updateTimer is a timer that updates the timestamp of Pipeline
+func (pl *Pipeline) updateTimer() {
+	ticker := time.NewTicker(time.Second)
+
+	defer func() {
+		ticker.Stop()
+		pl.wg.Done()
+	}()
+
+	for {
+		select {
+		case <-pl.ctx.Done():
+			return
+		case <-ticker.C:
+			pl.timer.Store(time.Now().UnixMilli())
+		}
+	}
 }

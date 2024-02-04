@@ -44,6 +44,8 @@ func (gr *Group) Stop() {
 		gr.cancel()
 		gr.wg.Wait()
 		gr.lock.Lock()
+		// 重置工作元素数组长度，回收内存
+		// reset the length of worker element array to help GC.
 		gr.elements = gr.elements[:0]
 		gr.lock.Unlock()
 	})
@@ -152,6 +154,10 @@ func (gr *Group) execute() []any {
 	// 等待工作者完成
 	// wait workers done.
 	gr.wg.Wait()
+
+	// 重置工作元素数组长度，帮助 GC
+	// reset the length of worker element array to help GC.
+	gr.elements = gr.elements[:0]
 
 	// 返回结果数组
 	// return result array.
