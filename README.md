@@ -1,12 +1,12 @@
 <div align="center">
 	<h1>Karta</h1>
+    <p>A lightweight task batch and asynchronous processing module.</p>
 	<img src="assets/logo.png" alt="logo" width="300px">
-	<h4>A lightweight mapping component for tasks</h4>
 </div>
 
 # Introduction
 
-`Karta` component is a lightweight mapping component for tasks. It very similar to `ThreadPoolExecutor` in Python. It provides a simple interface to submit tasks and get the results.
+`Karta` component is a lightweight task batch and asynchronous processing module. It very similar to `ThreadPoolExecutor` in Python. It provides a simple interface to submit tasks and get the results.
 
 Why `Karta`? In my job, I need to do a lot of job processing. I want to use like `ThreadPoolExecutor` code to do the job. However, in golang there is no such component. So I write one.
 

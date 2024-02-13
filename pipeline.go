@@ -98,9 +98,9 @@ func (pl *Pipeline) Stop() {
 // 执行器，执行工作管道中的任务
 // executor, execute tasks in the pipeline.
 func (pl *Pipeline) executor() {
-	// 任务执行最后一次启动时间点
-	// last start time of task execution.
-	updateAt := time.Now().UnixMilli()
+	// 任务执行启动时间点
+	// start time of task execution.
+	updateAt := pl.timer.Load()
 
 	// 启动空闲超时定时器
 	// start idle timeout timer.
