@@ -1,9 +1,15 @@
 package karta
 
+import "math"
+
 const (
-	// 默认的组中的工作者数量
-	// default number of workers in a group.
-	defaultWorkerNum = 2
+	// 默认的最小工作者数量
+	// default minimum number of workers
+	defaultMinWorkerNum = int64(1)
+
+	// 默认的最大工作者数量
+	// default maximum number of workers
+	defaultMaxWorkerNum = int64(math.MaxUint16) * 8
 )
 
 var (
@@ -29,7 +35,7 @@ type Config struct {
 // create a new config.
 func NewConfig() *Config {
 	return &Config{
-		num:        defaultWorkerNum,
+		num:        int(defaultMinWorkerNum),
 		callback:   NewEmptyCallback(),
 		handleFunc: DefaultMsgHandleFunc,
 	}
@@ -44,15 +50,15 @@ func (c *Config) WithWorkerNumber(num int) *Config {
 
 // 设置回调函数
 // set callback function.
-func (c *Config) WithCallback(cb Callback) *Config {
-	c.callback = cb
+func (c *Config) WithCallback(callback Callback) *Config {
+	c.callback = callback
 	return c
 }
 
 // 设置消息处理函数
 // set message handle function.
-func (c *Config) WithHandleFunc(h MessageHandleFunc) *Config {
-	c.handleFunc = h
+func (c *Config) WithHandleFunc(fn MessageHandleFunc) *Config {
+	c.handleFunc = fn
 	return c
 }
 
@@ -73,8 +79,8 @@ func DefaultConfig() *Config {
 // check config and return a default config if invalid.
 func isConfigValid(conf *Config) *Config {
 	if conf != nil {
-		if conf.num <= 0 {
-			conf.num = defaultWorkerNum
+		if conf.num <= 0 || conf.num > int(defaultMaxWorkerNum) {
+			conf.num = int(defaultMinWorkerNum)
 		}
 		if conf.callback == nil {
 			conf.callback = NewEmptyCallback()
