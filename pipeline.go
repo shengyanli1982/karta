@@ -6,6 +6,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"golang.org/x/time/rate"
 )
 
 // 立即执行
@@ -13,16 +15,23 @@ import (
 const immediate = time.Duration(0)
 
 var (
-	// 管道已经关闭 (pipeline is closed)
+	// 管道已经关闭
+	// pipeline is closed
 	ErrorQueueClosed = errors.New("pipeline is closed")
 )
 
 var (
-	// 默认的工作者空闲超时时间, 10 秒 (default worker idle timeout, 10 seconds)
+	// 默认的工作者空闲超时时间, 10 秒
+	// default worker idle timeout, 10 seconds
 	defaultWorkerIdleTimeout = (10 * time.Second).Milliseconds()
 
-	// 默认的最小工作者数量 (default minimum number of workers)
-	defaultMinWorkerNum = int64(1)
+	// 默认新建工作者的突发数量, 8
+	// default new workers burst, 8
+	defaultNewWorkersBurst = 8
+
+	// 默认每秒新建工作者的数量, 4
+	// default number of new workers per second, 4
+	defaultNewWorkersPerSecond = 4
 )
 
 // 管道
@@ -37,6 +46,7 @@ type Pipeline struct {
 	timer       atomic.Int64           // Atomic integer for tracking the pipeline's timer.
 	rc          atomic.Int64           // Atomic integer for tracking the pipeline's resource consumption.
 	elementpool *ElemmentExtPool       // The pool for managing extended elements.
+	wlimit      *rate.Limiter          // The resource ratelimit for create new workers.
 }
 
 // 创建一个新的管道
@@ -56,37 +66,21 @@ func NewPipeline(queue DelayingQueueInterface, conf *Config) *Pipeline {
 		timer:       atomic.Int64{},
 		rc:          atomic.Int64{},
 		elementpool: NewElementExtPool(),
+		wlimit:      rate.NewLimiter(rate.Limit(defaultNewWorkersPerSecond), defaultNewWorkersBurst),
 	}
 	pl.ctx, pl.cancel = context.WithCancel(context.Background())
 	pl.timer.Store(time.Now().UnixMilli())
 
 	// 启动工作者
 	// start workers.
-	pl.rc.Store(int64(conf.num))
-	pl.wg.Add(conf.num)
-	for i := 0; i < conf.num; i++ {
-		go pl.executor()
-	}
+	pl.rc.Store(1)
+	pl.wg.Add(1)
+	go pl.executor()
 
 	// 启动时间定时器
 	// start time timer.
 	pl.wg.Add(1)
-	go func() {
-		ticker := time.NewTicker(time.Second)
-		defer func() {
-			ticker.Stop()
-			pl.wg.Done()
-		}()
-
-		for {
-			select {
-			case <-pl.ctx.Done():
-				return
-			case <-ticker.C:
-				pl.timer.Store(time.Now().UnixMilli())
-			}
-		}
-	}()
+	go pl.updateTimer()
 
 	return &pl
 }
@@ -104,9 +98,9 @@ func (pl *Pipeline) Stop() {
 // 执行器，执行工作管道中的任务
 // executor, execute tasks in the pipeline.
 func (pl *Pipeline) executor() {
-	// 任务执行最后一次启动时间点
-	// last start time of task execution.
-	updateAt := time.Now().UnixMilli()
+	// 任务执行启动时间点
+	// start time of task execution.
+	updateAt := pl.timer.Load()
 
 	// 启动空闲超时定时器
 	// start idle timeout timer.
@@ -216,7 +210,7 @@ func (pl *Pipeline) submit(fn MessageHandleFunc, msg any, delay time.Duration) e
 
 	// 判断当前工作管道中的任务数量是否超足够, 如果不足则启动一个新的工作者
 	// if number of tasks in the pipeline is not enough, start a new worker.
-	if int64(pl.config.num) > pl.rc.Load() {
+	if int64(pl.config.num) > pl.rc.Load() && pl.wlimit.Allow() {
 		pl.rc.Add(1)
 		pl.wg.Add(1)
 		go pl.executor()
@@ -249,4 +243,24 @@ func (pl *Pipeline) SubmitAfterWithFunc(fn MessageHandleFunc, msg any, delay tim
 // submit task after delay.
 func (pl *Pipeline) SubmitAfter(msg any, delay time.Duration) error {
 	return pl.SubmitAfterWithFunc(nil, msg, delay)
+}
+
+// updateTimer 是一个定时器，用于更新 Pipeline 的时间戳
+// updateTimer is a timer that updates the timestamp of Pipeline
+func (pl *Pipeline) updateTimer() {
+	ticker := time.NewTicker(time.Second)
+
+	defer func() {
+		ticker.Stop()
+		pl.wg.Done()
+	}()
+
+	for {
+		select {
+		case <-pl.ctx.Done():
+			return
+		case <-ticker.C:
+			pl.timer.Store(time.Now().UnixMilli())
+		}
+	}
 }

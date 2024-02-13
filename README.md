@@ -1,12 +1,12 @@
 <div align="center">
 	<h1>Karta</h1>
+    <p>A lightweight task batch and asynchronous processing module.</p>
 	<img src="assets/logo.png" alt="logo" width="300px">
-	<h4>A lightweight mapping component for tasks</h4>
 </div>
 
 # Introduction
 
-`Karta` component is a lightweight mapping component for tasks. It very similar to `ThreadPoolExecutor` in Python. It provides a simple interface to submit tasks and get the results.
+`Karta` component is a lightweight task batch and asynchronous processing module. It very similar to `ThreadPoolExecutor` in Python. It provides a simple interface to submit tasks and get the results.
 
 Why `Karta`? In my job, I need to do a lot of job processing. I want to use like `ThreadPoolExecutor` code to do the job. However, in golang there is no such component. So I write one.
 
@@ -35,7 +35,7 @@ go get github.com/shengyanli1982/karta
 
 `Karta` has a config object, which can be used to configure the batch process behavior. The config object can be used following methods to set.
 
--   `WithWorkerNumber`: set the number of workers. The default is the number is `2`.
+-   `WithWorkerNumber`: set the number of workers. The default number is `1`, max is `524280`
 -   `WithCallback` : set the callback function. The default is `&emptyCallback{}`.
 -   `WithHandleFunc` : set the handle function. The default is `defaultMsgHandleFunc`.
 -   `WithResult`: flags whether all tasks result can be recorded. The default is `false`. It only works for `Group`.
