@@ -25,6 +25,10 @@ var (
 	// default worker idle timeout, 10 seconds
 	defaultWorkerIdleTimeout = (10 * time.Second).Milliseconds()
 
+	// 默认的 worker 状态扫描间隔, 3 秒
+	// default worker status scan interval, 3 seconds
+	defaultWorkerStatusScanInterval = 3 * time.Second
+
 	// 默认新建工作者的突发数量, 8
 	// default new workers burst, 8
 	defaultNewWorkersBurst = 8
@@ -104,7 +108,7 @@ func (pl *Pipeline) executor() {
 
 	// 启动空闲超时定时器
 	// start idle timeout timer.
-	ticker := time.NewTicker(3 * time.Second)
+	ticker := time.NewTicker(defaultWorkerStatusScanInterval)
 
 	defer func() {
 		pl.wg.Done()
@@ -120,13 +124,16 @@ func (pl *Pipeline) executor() {
 			// 如果空闲超时，则判断当前工作者数量是否超过最小工作者数量，如果超过则返回
 			// if idle timeout, judge whether number of workers is greater than minimum number of workers, if greater than, return.
 			if pl.timer.Load()-updateAt >= defaultWorkerIdleTimeout && pl.rc.Load() > defaultMinWorkerNum {
+				// 减少工作者数量
+				// decrease number of workers.
+				pl.rc.Add(-1)
+
+				// 结束 executor
+				// end executor.
 				return
 			}
 
 		default:
-			// 更新时间
-			updateAt = pl.timer.Load()
-
 			// 如果管道已经关闭，则返回
 			// if pipeline is closed, return.
 			if pl.queue.IsClosed() {
@@ -176,6 +183,9 @@ func (pl *Pipeline) executor() {
 			// 将扩展元素放回对象池
 			// put extended element back to the pool.
 			pl.elementpool.Put(element)
+
+			// 更新时间
+			updateAt = pl.timer.Load()
 		}
 	}
 }
@@ -263,4 +273,10 @@ func (pl *Pipeline) updateTimer() {
 			pl.timer.Store(time.Now().UnixMilli())
 		}
 	}
+}
+
+// 获取当前正在运行的工作者数量
+// get the number of workers currently running.
+func (pl *Pipeline) GetWorkerNumber() int64 {
+	return pl.rc.Load()
 }
