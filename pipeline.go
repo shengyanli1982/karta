@@ -110,7 +110,10 @@ func (pl *Pipeline) executor() {
 	// start idle timeout timer.
 	ticker := time.NewTicker(defaultWorkerStatusScanInterval)
 
+	// 函数退出时，减少工作者数量，并且减少 WaitGroup 计数 1，关闭计时器
+	// when function exits, reduce the number of workers, reduce the WaitGroup count by 1, and close the timer.
 	defer func() {
+		pl.rc.Add(-1)
 		pl.wg.Done()
 		ticker.Stop()
 	}()
@@ -124,12 +127,6 @@ func (pl *Pipeline) executor() {
 			// 如果空闲超时，则判断当前工作者数量是否超过最小工作者数量，如果超过则返回
 			// if idle timeout, judge whether number of workers is greater than minimum number of workers, if greater than, return.
 			if pl.timer.Load()-updateAt >= defaultWorkerIdleTimeout && pl.rc.Load() > defaultMinWorkerNum {
-				// 减少工作者数量
-				// decrease number of workers.
-				pl.rc.Add(-1)
-
-				// 结束 executor
-				// end executor.
 				return
 			}
 
@@ -184,7 +181,8 @@ func (pl *Pipeline) executor() {
 			// put extended element back to the pool.
 			pl.elementpool.Put(element)
 
-			// 更新时间
+			// 更新信息投递时间
+			// update message delivery time.
 			updateAt = pl.timer.Load()
 		}
 	}
