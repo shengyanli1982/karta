@@ -3,64 +3,64 @@ package karta
 
 import "time"
 
-// 回调函数
-// callback function.
+// Callback 是一个接口，定义了在消息处理前后需要调用的方法
+// Callback is an interface that defines methods to be called before and after message processing
 type Callback interface {
-	OnBefore(msg any)                   // 在消息处理前调用
-	OnAfter(msg, result any, err error) // 在消息处理后调用
+	OnBefore(msg any)                   // 在消息处理前调用 (Called before message processing)
+	OnAfter(msg, result any, err error) // 在消息处理后调用 (Called after message processing)
 }
 
-// 空回调函数
-// empty callback function.
+// emptyCallback 是一个实现了 Callback 接口的结构体，但是它的方法都是空的
+// emptyCallback is a struct that implements the Callback interface, but its methods are all empty
 type emptyCallback struct{}
 
-// OnBefore 在消息处理前调用
-// OnBefore is called before message handle.
+// OnBefore 是 emptyCallback 的方法，它在消息处理前被调用，但是什么都不做
+// OnBefore is a method of emptyCallback, it is called before message processing, but does nothing
 func (emptyCallback) OnBefore(msg any) {}
 
-// OnAfter 在消息处理后调用
-// OnAfter is called after message handle.
+// OnAfter 是 emptyCallback 的方法，它在消息处理后被调用，但是什么都不做
+// OnAfter is a method of emptyCallback, it is called after message processing, but does nothing
 func (emptyCallback) OnAfter(msg, result any, err error) {}
 
-// NewEmptyCallback 创建一个新的空回调函数
-// NewEmptyCallback creates a new empty callback function.
+// NewEmptyCallback 是一个函数，它创建并返回一个新的 emptyCallback
+// NewEmptyCallback is a function that creates and returns a new emptyCallback
 func NewEmptyCallback() Callback {
 	return &emptyCallback{}
 }
 
-// QueueInterface 是队列接口
-// QueueInterface is queue interface
+// QueueInterface 是一个接口，定义了队列的基本操作，如添加元素、获取元素、标记元素完成、停止队列和判断队列是否已经关闭
+// QueueInterface is an interface that defines basic operations of a queue, such as adding elements, getting elements, marking elements as done, stopping the queue, and checking if the queue is closed
 type QueueInterface interface {
-	Add(element any) error         // 添加元素 (add element)
-	Get() (element any, err error) // 获取元素 (get element)
-	Done(element any)              // 标记元素完成 (mark element done)
-	Stop()                         // 停止队列 (stop queue)
-	IsClosed() bool                // 判断管道是否已经关闭 (judge whether queue is closed)
+	Add(element any) error         // 添加元素 (Add element)
+	Get() (element any, err error) // 获取元素 (Get element)
+	Done(element any)              // 标记元素完成 (Mark element as done)
+	Stop()                         // 停止队列 (Stop the queue)
+	IsClosed() bool                // 判断队列是否已经关闭 (Check if the queue is closed)
 }
 
-// DelayingQueueInterface 包含延迟队列接口的定义
-// DelayingQueueInterface is delaying queue interface
+// DelayingQueueInterface 是一个接口，它继承了 QueueInterface，并添加了一个新的方法 AddAfter，用于在指定的延迟后添加元素到队列
+// DelayingQueueInterface is an interface that inherits from QueueInterface and adds a new method AddAfter for adding elements to the queue after a specified delay
 type DelayingQueueInterface interface {
 	QueueInterface
-	AddAfter(element any, delay time.Duration) error // 将元素添加到队列中，并在指定的延迟后立即可用 (add an element to the queue, making it available after the specified delay)
+	AddAfter(element any, delay time.Duration) error // 在指定的延迟后添加元素到队列 (Add an element to the queue after a specified delay)
 }
 
-// FakeDelayingQueue 是一个模拟的延迟队列
-// FakeDelayingQueue is a fake delaying queue
+// FakeDelayingQueue 是一个结构体，它实现了 DelayingQueueInterface 接口，但是它的 AddAfter 方法实际上并不会延迟添加元素
+// FakeDelayingQueue is a struct that implements the DelayingQueueInterface interface, but its AddAfter method does not actually delay adding elements
 type FakeDelayingQueue struct {
 	QueueInterface
 }
 
-// NewFakeDelayingQueue 创建一个新的模拟延迟队列
-// NewFakeDelayingQueue creates a new fake delaying queue
+// NewFakeDelayingQueue 是一个函数，它创建并返回一个新的 FakeDelayingQueue
+// NewFakeDelayingQueue is a function that creates and returns a new FakeDelayingQueue
 func NewFakeDelayingQueue(queue QueueInterface) *FakeDelayingQueue {
 	return &FakeDelayingQueue{
 		QueueInterface: queue,
 	}
 }
 
-// AddAfter 将元素添加到队列中，并在指定的延迟后立即可用
-// AddAfter adds an element to the queue, making it available after the specified delay.
+// AddAfter 是 FakeDelayingQueue 的方法，它将元素添加到队列，但是并不会延迟
+// AddAfter is a method of FakeDelayingQueue, it adds an element to the queue, but does not delay
 func (q *FakeDelayingQueue) AddAfter(element any, delay time.Duration) error {
 	return q.Add(element)
 }
