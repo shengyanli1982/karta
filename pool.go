@@ -2,52 +2,52 @@ package karta
 
 import "sync"
 
-// 工作元素, 用于 Group 和 Queue
-// Worker Element, used by Group and Queue
+// Element 是一个结构体，表示工作元素，它被 Group 和 Queue 使用
+// Element is a struct that represents a worker element, it is used by Group and Queue
 type Element struct {
-	data  any   // 数据
-	value int64 // 值
+	data  any   // 数据 (Data)
+	value int64 // 值 (Value)
 }
 
-// 获取数据
-// get data.
+// GetData 是 Element 的方法，它返回元素的数据
+// GetData is a method of Element, it returns the data of the element
 func (e *Element) GetData() any {
 	return e.data
 }
 
-// 获取值
-// get value.
+// GetValue 是 Element 的方法，它返回元素的值
+// GetValue is a method of Element, it returns the value of the element
 func (e *Element) GetValue() int64 {
 	return e.value
 }
 
-// 设置数据
-// set data.
+// SetData 是 Element 的方法，它设置元素的数据
+// SetData is a method of Element, it sets the data of the element
 func (e *Element) SetData(data any) {
 	e.data = data
 }
 
-// 设置值
-// set value.
+// SetValue 是 Element 的方法，它设置元素的值
+// SetValue is a method of Element, it sets the value of the element
 func (e *Element) SetValue(value int64) {
 	e.value = value
 }
 
-// 重置
-// reset.
+// Reset 是 Element 的方法，它重置元素的数据和值
+// Reset is a method of Element, it resets the data and value of the element
 func (e *Element) Reset() {
 	e.data = nil
 	e.value = 0
 }
 
-// 对象池
-// object ElementPool.
+// ElementPool 是一个结构体，表示对象池，它用于存储和复用 Element
+// ElementPool is a struct that represents an object pool, it is used to store and reuse Element
 type ElementPool struct {
 	pool *sync.Pool
 }
 
-// NewElementPool 创建一个新的对象池
-// NewElementPool creates a new object pool.
+// NewElementPool 是一个函数，它创建并返回一个新的 ElementPool
+// NewElementPool is a function, it creates and returns a new ElementPool
 func NewElementPool() *ElementPool {
 	return &ElementPool{
 		pool: &sync.Pool{
@@ -58,14 +58,14 @@ func NewElementPool() *ElementPool {
 	}
 }
 
-// Get 从对象池中获取一个元素
-// Get gets an element from the object pool.
+// Get 是 ElementPool 的方法，它从对象池中获取一个 Element
+// Get is a method of ElementPool, it gets an Element from the object pool
 func (p *ElementPool) Get() *Element {
 	return p.pool.Get().(*Element)
 }
 
-// Put 将一个元素放回对象池中
-// Put puts an element back into the object pool.
+// Put 是 ElementPool 的方法，它将一个 Element 放回对象池中
+// Put is a method of ElementPool, it puts an Element back into the object pool
 func (p *ElementPool) Put(e *Element) {
 	if e != nil {
 		e.Reset()
@@ -73,40 +73,40 @@ func (p *ElementPool) Put(e *Element) {
 	}
 }
 
-// ElementExt 是 element 的扩展，包含了一个消息处理函数
-// ElementExt is an extension of element, which includes a message handling function.
+// ElementExt 是一个结构体，它是 Element 的扩展，包含了一个消息处理函数
+// ElementExt is a struct, it is an extension of Element, which includes a message handling function
 type ElementExt struct {
 	Element
-	fn MessageHandleFunc // 消息处理函数
+	fn MessageHandleFunc // 消息处理函数 (Message handling function)
 }
 
-// GetHandleFunc 获取消息处理函数
-// GetHandleFunc gets the message handling function.
+// GetHandleFunc 是 ElementExt 的方法，它获取消息处理函数
+// GetHandleFunc is a method of ElementExt, it gets the message handling function
 func (e *ElementExt) GetHandleFunc() MessageHandleFunc {
 	return e.fn
 }
 
-// SetHandleFunc 设置消息处理函数
-// SetHandleFunc sets the message handling function.
+// SetHandleFunc 是 ElementExt 的方法，它设置消息处理函数
+// SetHandleFunc is a method of ElementExt, it sets the message handling function
 func (e *ElementExt) SetHandleFunc(fn MessageHandleFunc) {
 	e.fn = fn
 }
 
-// Reset 重置元素扩展
-// Reset resets the element extension.
+// Reset 是 ElementExt 的方法，它重置元素扩展
+// Reset is a method of ElementExt, it resets the element extension
 func (e *ElementExt) Reset() {
 	e.Element.Reset()
 	e.fn = nil
 }
 
-// ElemmentExtPool 是对象池的扩展，用于存储 elementExt 对象
-// ElemmentExtPool is an extension of the object pool, used to store elementExt objects.
+// ElemmentExtPool 是一个结构体，它是对象池的扩展，用于存储 ElementExt 对象
+// ElemmentExtPool is a struct, it is an extension of the object pool, used to store ElementExt objects
 type ElemmentExtPool struct {
 	pool *sync.Pool
 }
 
-// NewElementExtPool 创建一个新的对象池
-// NewElementExtPool creates a new object pool.
+// NewElementExtPool 是一个函数，它创建并返回一个新的 ElemmentExtPool
+// NewElementExtPool is a function, it creates and returns a new ElemmentExtPool
 func NewElementExtPool() *ElemmentExtPool {
 	return &ElemmentExtPool{
 		pool: &sync.Pool{
@@ -117,14 +117,14 @@ func NewElementExtPool() *ElemmentExtPool {
 	}
 }
 
-// Get 从对象池中获取一个元素扩展
-// Get gets an element extension from the object pool.
+// Get 是 ElemmentExtPool 的方法，它从对象池中获取一个 ElementExt
+// Get is a method of ElemmentExtPool, it gets an ElementExt from the object pool
 func (p *ElemmentExtPool) Get() *ElementExt {
 	return p.pool.Get().(*ElementExt)
 }
 
-// Put 将一个元素扩展放回对象池中
-// Put puts an element extension back into the object pool.
+// Put 是 ElemmentExtPool 的方法，它将一个 ElementExt 放回对象池中
+// Put is a method of ElemmentExtPool, it puts an ElementExt back into the object pool
 func (p *ElemmentExtPool) Put(e *ElementExt) {
 	if e != nil {
 		e.Reset()
