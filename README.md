@@ -1,7 +1,7 @@
 <div align="center">
 	<h1>Karta</h1>
     <p>A compact module designed for batching tasks and processing them asynchronously, enhancing efficiency and throughput in concurrent environments.</p>
-	<img src="assets/logo.png" alt="logo" width="300px">
+	<img src="assets/logo.png" alt="logo" width="400px">
 </div>
 
 # Introduction
