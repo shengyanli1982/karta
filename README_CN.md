@@ -1,63 +1,63 @@
-English | [中文](./README_CN.md)
+[English](./README.md) | 中文
 
 <div align="center">
 	<h1>Karta</h1>
-    <p>A compact module designed for batching tasks and processing them asynchronously, enhancing efficiency and throughput in concurrent environments.</p>
+	<p>一个紧凑的模块，旨在批量处理任务并在并发环境中异步处理，提高效率和吞吐量。</p>
 	<img src="assets/logo.png" alt="logo" width="400px">
 </div>
 
-# Introduction
+# 简介
 
-The `Karta` component is a lightweight task batch and asynchronous processing module, similar to the `ThreadPoolExecutor` in Python. It provides a simple interface to submit tasks and retrieve results.
+`Karta` 组件是一个轻量级的任务批处理和异步处理模块，类似于 Python 中的 `ThreadPoolExecutor`。它提供了一个简单的接口来提交任务并获取结果。
 
-Why `Karta`? In my work, I often need to process a large number of jobs. I wanted to use code similar to `ThreadPoolExecutor` in Python to handle these jobs. However, there was no such component available in Golang, so I decided to create one.
+为什么选择 `Karta`？在我的工作中，我经常需要处理大量的任务。我希望使用类似于 Python 中的 `ThreadPoolExecutor` 的代码来处理这些任务。然而，在 Golang 中并没有这样的组件可用，所以我决定自己创建一个。
 
-`Karta` is designed to be simple and consists of two main processes: `Group` and `Pipeline`.
+`Karta` 的设计简单易用，由两个主要的组件组成：`Group` 和 `Pipeline`。
 
--   `Group`: Batch processing of tasks using the `Group` component.
--   `Pipeline`: Sequential processing of tasks using the `Pipeline` component. Each task can specify a handle function.
+-   `Group`：使用 `Group` 组件进行任务的批处理。
+-   `Pipeline`：使用 `Pipeline` 组件进行任务的顺序处理。每个任务可以指定一个处理函数。
 
-# Advantages
+# 优势
 
--   Simple and user-friendly
--   Lightweight with no external dependencies
--   Supports callback functions for custom actions
+-   简单易用
+-   轻量级，无外部依赖
+-   支持自定义操作的回调函数
 
-# Installation
+# 安装
 
 ```bash
 go get github.com/shengyanli1982/karta
 ```
 
-# Quick Start
+# 快速入门
 
-`Karta` is incredibly easy to use. With just a few lines of code, you can efficiently batch process tasks.
+`Karta` 非常易于使用。只需几行代码，您就可以高效地批量处理任务。
 
-### Config
+### 配置
 
-The `Karta` library provides a config object that allows you to customize the behavior of the batch processing. The config object offers the following methods for configuration:
+`Karta` 库提供了一个配置对象，允许您自定义批处理的行为。配置对象提供以下方法进行配置：
 
--   `WithWorkerNumber`: Sets the number of workers. The default value is `1`, with a maximum of `524280`.
--   `WithCallback`: Sets the callback function. The default value is `&emptyCallback{}`.
--   `WithHandleFunc`: Sets the handle function. The default value is `defaultMsgHandleFunc`.
--   `WithResult`: Specifies whether to record the results of all tasks. The default value is `false`, and it only applies to `Group`.
+-   `WithWorkerNumber`：设置工作线程的数量。默认值为 `1`，最大值为 `524280`。
+-   `WithCallback`：设置回调函数。默认值为 `&emptyCallback{}`。
+-   `WithHandleFunc`：设置处理函数。默认值为 `defaultMsgHandleFunc`。
+-   `WithResult`：指定是否记录所有任务的结果。默认值为 `false`，仅适用于 `Group`。
 
-### Components
+### 组件
 
 #### 1. Group
 
-`Group` is a batch processing component that allows you to process tasks in batches. It uses a fixed number of workers to handle the tasks.
+`Group` 是一个批处理组件，允许您按批处理任务。它使用固定数量的工作线程来处理任务。
 
-**Methods**
+**方法**
 
--   `Map`: Processes tasks in batches by providing a slice of objects, with each object serving as a parameter for the handle function. The method returns a slice of results when `WithResult` is set to `true`.
+-   `Map`：通过提供对象的切片来按批处理任务，每个对象作为处理函数的参数。当 `WithResult` 设置为 `true` 时，该方法返回结果的切片。
 
-**Callback**
+**回调函数**
 
--   `OnBefore`: Callback function executed before task processing.
--   `OnAfter`: Callback function executed after task processing.
+-   `OnBefore`：在任务处理之前执行的回调函数。
+-   `OnAfter`：在任务处理之后执行的回调函数。
 
-**Example**
+**示例**
 
 ```go
 package main
@@ -106,7 +106,7 @@ func main() {
 }
 ```
 
-**Result**
+**执行结果**
 
 ```bash
 $ go run demo.go
@@ -115,13 +115,13 @@ $ go run demo.go
 
 #### 2. Pipeline
 
-`Pipeline` is a task processing component that can process tasks one by one. It dynamically adjusts the number of workers based on the availability of tasks.
+`Pipeline` 是一个任务处理组件，可以逐个处理任务。它根据任务的可用性动态调整工作线程的数量。
 
-Idle workers are automatically closed after `defaultWorkerIdleTimeout` (10 seconds). If there are no tasks for a long time, the number of workers will decrease to `defaultMinWorkerNum` (1).
+空闲的工作线程会在 `defaultWorkerIdleTimeout`（10 秒）后自动关闭。如果长时间没有任务，工作线程的数量将减少到 `defaultMinWorkerNum`（1）。
 
-When a task is submitted using `Submit` or `SubmitWithFunc`, it is processed by an idle worker. If there are no idle workers, a new worker is created. The number of running workers increases to the value set by the `WithWorkerNumber` method if there are not enough running workers.
+当使用 `Submit` 或 `SubmitWithFunc` 提交任务时，它会由一个空闲的工作线程处理。如果没有空闲的工作线程，将创建一个新的工作线程。如果运行中的工作线程不足，运行中的工作线程数量将增加到 `WithWorkerNumber` 方法设置的值。
 
-`Pipeline` requires a queue object that implements the `DelayingQueueInterface` interface to store tasks.
+`Pipeline` 需要一个实现了 `DelayingQueueInterface` 接口的队列对象来存储任务。
 
 ```go
 // QueueInterface 是一个接口，定义了队列的基本操作，如添加元素、获取元素、标记元素完成、停止队列和判断队列是否已经关闭
@@ -142,20 +142,20 @@ type DelayingQueueInterface interface {
 }
 ```
 
-**Methods**
+**方法**
 
--   `SubmitWithFunc`: Submits a task with a handle function. `msg` is the handle function parameter. If `fn` is `nil`, the handle function will be set using `WithHandleFunc`.
--   `Submit`: Submits a task without a handle function. `msg` is the handle function parameter. The handle function will be set using `WithHandleFunc`.
--   `SubmitAfterWithFunc`: Submits a task with a handle function after a delay. `msg` is the handle function parameter. If `fn` is `nil`, the handle function will be set using `WithHandleFunc`. `delay` is the delay time (`time.Duration`).
--   `SubmitAfter`: Submits a task without a handle function after a delay. `msg` is the handle function parameter. The handle function will be set using `WithHandleFunc`. `delay` is the delay time (`time.Duration`).
--   `Stop`: Stops the pipeline.
+-   `SubmitWithFunc`: 使用处理函数提交任务。`msg` 是处理函数的参数。如果 `fn` 为 `nil`，将使用 `WithHandleFunc` 设置处理函数。
+-   `Submit`: 提交没有处理函数的任务。`msg` 是处理函数的参数。处理函数将使用 `WithHandleFunc` 设置。
+-   `SubmitAfterWithFunc`: 在延迟后使用处理函数提交任务。`msg` 是处理函数的参数。如果 `fn` 为 `nil`，将使用 `WithHandleFunc` 设置处理函数。`delay` 是延迟时间（`time.Duration`）。
+-   `SubmitAfter`: 在延迟后提交没有处理函数的任务。`msg` 是处理函数的参数。处理函数将使用 `WithHandleFunc` 设置。`delay` 是延迟时间（`time.Duration`）。
+-   `Stop`: 停止 Pipeline。
 
-**Callback**
+**回调函数**
 
--   `OnBefore`: Callback function executed before task processing.
--   `OnAfter`: Callback function executed after task processing.
+-   `OnBefore`: 在任务处理之前执行的回调函数。
+-   `OnAfter`: 在任务处理之后执行的回调函数。
 
-**Example**
+**示例**
 
 ```go
 package main
@@ -223,7 +223,7 @@ func main() {
 }
 ```
 
-**Result**
+**执行结果**
 
 ```bash
 $ go run demo.go
