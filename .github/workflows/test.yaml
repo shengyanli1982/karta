@@ -1,6 +1,4 @@
 on:
-  push:
-    branches: ["main"]
   pull_request:
     branches: ["main"]
 name: Test
@@ -8,7 +6,7 @@ jobs:
   test:
     strategy:
       matrix:
-        go-version: [1.18.x, 1.19.x, 1.20.x, 1.21.x, 1.22.x]
+        go-version: [1.19.x, 1.20.x, 1.21.x, 1.22.x]
         os: [ubuntu-latest, macos-latest, windows-latest]
     runs-on: ${{ matrix.os }}
     steps:
@@ -17,4 +15,4 @@ jobs:
           go-version: "${{ matrix.go-version }}"
       - uses: actions/checkout@v3
       - name: Test
-        run: go test -v ./test/...
+        run: go mod tidy && go test -v ./test/...
