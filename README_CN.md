@@ -3,8 +3,12 @@
 <div align="center">
 	<h1>Karta</h1>
 	<p>一个紧凑的模块，旨在批量处理任务并在并发环境中异步处理，提高效率和吞吐量。</p>
-	<img src="assets/logo.png" alt="logo" width="400px">
+	<img src="assets/logo.png" alt="logo" width="450px">
 </div>
+
+[![Go Report Card](https://goreportcard.com/badge/github.com/shengyanli1982/karta)](https://goreportcard.com/report/github.com/shengyanli1982/karta)
+[![Build Status](https://github.com/shengyanli1982/karta/actions/workflows/test.yaml/badge.svg)](https://github.com/shengyanli1982/karta/actions)
+[![Go Reference](https://pkg.go.dev/badge/github.com/shengyanli1982/karta.svg)](https://pkg.go.dev/github.com/shengyanli1982/karta)
 
 # 简介
 
