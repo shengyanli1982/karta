@@ -3,8 +3,12 @@ English | [中文](./README_CN.md)
 <div align="center">
 	<h1>Karta</h1>
     <p>A compact module designed for batching tasks and processing them asynchronously, enhancing efficiency and throughput in concurrent environments.</p>
-	<img src="assets/logo.png" alt="logo" width="400px">
+	<img src="assets/logo.png" alt="logo" width="450px">
 </div>
+
+[![Go Report Card](https://goreportcard.com/badge/github.com/shengyanli1982/karta)](https://goreportcard.com/report/github.com/shengyanli1982/karta)
+[![Build Status](https://github.com/shengyanli1982/karta/actions/workflows/test.yaml/badge.svg)](https://github.com/shengyanli1982/karta/actions)
+[![Go Reference](https://pkg.go.dev/badge/github.com/shengyanli1982/karta.svg)](https://pkg.go.dev/github.com/shengyanli1982/karta)
 
 # Introduction
 
