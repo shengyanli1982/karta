@@ -1,6 +1,4 @@
 on:
-  push:
-    branches: ["main"]
   pull_request:
     branches: ["main"]
 name: Test
@@ -17,4 +15,4 @@ jobs:
           go-version: "${{ matrix.go-version }}"
       - uses: actions/checkout@v3
       - name: Test
-        run: go test -v ./test/...
+        run: go mod tidy && go test -v ./test/...

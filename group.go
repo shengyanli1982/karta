@@ -9,16 +9,36 @@ import (
 // Element memory pool
 var elementpool = NewElementPool()
 
-// 批量处理任务
-// Batch processing task
+// Group 是一个用于批量处理任务的结构体
+// Group is a struct for batch processing tasks
 type Group struct {
-	elements []*Element         // 工作元素数组 (Array of worker elements)
-	lock     sync.Mutex         // 锁 (Lock for synchronization)
-	config   *Config            // 配置 (Configuration settings)
-	wg       sync.WaitGroup     // 等待组 (Wait group for synchronization)
-	once     sync.Once          // 用于确保某个操作只执行一次 (Ensures an operation is performed only once)
-	ctx      context.Context    // 上下文 (Context for managing goroutine lifetimes)
-	cancel   context.CancelFunc // 取消函数 (Function to cancel the context)
+	// elements 是一个 Element 类型的切片，用于存储 Group 中的所有元素
+	// elements is a slice of type Element, used to store all elements in the Group
+	elements []*Element
+
+	// lock 是一个互斥锁，用于保护 Group 结构体的并发访问
+	// lock is a mutex, used to protect concurrent access to the Group struct
+	lock sync.Mutex
+
+	// config 是 Group 的配置，包括处理函数、回调函数等
+	// config is the configuration of Group, including processing functions, callback functions, etc.
+	config *Config
+
+	// wg 是一个 WaitGroup，用于等待所有的工作完成
+	// wg is a WaitGroup, used to wait for all work to be completed
+	wg sync.WaitGroup
+
+	// once 是一个 Once，用于确保某个操作只执行一次，例如停止 Group
+	// once is a Once, used to ensure that an operation is performed only once, such as stopping the Group
+	once sync.Once
+
+	// ctx 是一个上下文，用于管理 goroutine 的生命周期
+	// ctx is a context, used to manage the lifetimes of goroutines
+	ctx context.Context
+
+	// cancel 是一个取消函数，用于取消 ctx
+	// cancel is a function to cancel ctx
+	cancel context.CancelFunc
 }
 
 // 创建一个新的批量处理任务
@@ -31,11 +51,25 @@ func NewGroup(conf *Config) *Group {
 	// 初始化 Group 结构体
 	// Initialize the Group struct
 	gr := Group{
+		// elements 是一个 Element 类型的切片，用于存储 Group 中的所有元素
+		// elements is a slice of type Element, used to store all elements in the Group
 		elements: []*Element{},
-		lock:     sync.Mutex{},
-		config:   conf,
-		wg:       sync.WaitGroup{},
-		once:     sync.Once{},
+
+		// lock 是一个互斥锁，用于保护 Group 结构体的并发访问
+		// lock is a mutex, used to protect concurrent access to the Group struct
+		lock: sync.Mutex{},
+
+		// config 是 Group 的配置，包括处理函数、回调函数等
+		// config is the configuration of Group, including processing functions, callback functions, etc.
+		config: conf,
+
+		// wg 是一个 WaitGroup，用于等待所有的工作完成
+		// wg is a WaitGroup, used to wait for all work to be completed
+		wg: sync.WaitGroup{},
+
+		// once 是一个 Once，用于确保某个操作只执行一次，例如停止 Group
+		// once is a Once, used to ensure that an operation is performed only once, such as stopping the Group
+		once: sync.Once{},
 	}
 
 	// 创建一个新的上下文，该上下文在调用 cancel 函数时被取消
@@ -48,19 +82,27 @@ func NewGroup(conf *Config) *Group {
 // 停止批量处理任务
 // Stop the batch processing task
 func (gr *Group) Stop() {
+	// 使用 once.Do 方法确保以下操作只执行一次
+	// Use the once.Do method to ensure that the following operations are performed only once
 	gr.once.Do(func() {
-		// 取消上下文
-		// Cancel the context
+		// 调用 cancel 方法取消上下文，这将导致所有依赖该上下文的 goroutine 收到取消信号
+		// Call the cancel method to cancel the context, which will cause all goroutines that depend on this context to receive a cancellation signal
 		gr.cancel()
 
-		// 等待所有 goroutine 完成
-		// Wait for all goroutines to complete
+		// 调用 wg.Wait 方法等待所有 goroutine 完成
+		// Call the wg.Wait method to wait for all goroutines to complete
 		gr.wg.Wait()
 
+		// 调用 lock 方法获取 Group 结构体的互斥锁，以保护并发访问
+		// Call the lock method to acquire the mutex of the Group struct to protect concurrent access
 		gr.lock.Lock()
-		// 重置工作元素数组长度，帮助垃圾回收
-		// Reset the length of the worker element array to help garbage collection
+
+		// 重置工作元素数组的长度为 0，这将帮助垃圾回收器回收这些元素
+		// Reset the length of the worker element array to 0, which will help the garbage collector to recycle these elements
 		gr.elements = gr.elements[:0]
+
+		// 调用 Unlock 方法释放 Group 结构体的互斥锁，以结束对其的保护
+		// Call the Unlock method to release the mutex of the Group struct to end its protection
 		gr.lock.Unlock()
 	})
 }
@@ -126,7 +168,10 @@ func (gr *Group) execute() []any {
 					return
 
 				default:
+					// 使用 lock 方法获取 Group 结构体的互斥锁，以保护并发访问
+					// Use the lock method to acquire the mutex of the Group struct to protect concurrent access
 					gr.lock.Lock()
+
 					// 如果没有元素, 则返回
 					// If there are no elements, return
 					if len(gr.elements) == 0 {
@@ -142,6 +187,9 @@ func (gr *Group) execute() []any {
 					// Remove an element from the worker element array and clean the first element
 					gr.elements[0] = nil
 					gr.elements = gr.elements[1:]
+
+					// 使用 Unlock 方法释放 Group 结构体的互斥锁，以结束对其的保护
+					// Use the Unlock method to release the mutex of the Group struct to end its protection
 					gr.lock.Unlock()
 
 					// 获取数据
