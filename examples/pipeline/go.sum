@@ -1,7 +1,7 @@
 github.com/davecgh/go-spew v1.1.1 h1:vj9j/u1bqnvCEfJOwUhtlOARqs3+rkHYY13jYWTU97c=
 github.com/pmezard/go-difflib v1.0.0 h1:4DBwDE0NGyQoBHbLQYPwSUPoCMWR5BEzIk/f1lZbAQM=
-github.com/shengyanli1982/workqueue v0.1.11 h1:czUA/oWFDjKH65KUfGuZPtGESQ8QS/Ehp0QsODX/g1M=
-github.com/shengyanli1982/workqueue v0.1.11/go.mod h1:gjVX17LBs2kKZ9r8pVRXPBgXk7Ysmf+Em86ErdygA88=
+github.com/shengyanli1982/workqueue/v2 v2.1.1 h1:Hv2DXPHCb421Vsr1f3AfPoMO/pS3DEcoFf1RTA+kEoU=
+github.com/shengyanli1982/workqueue/v2 v2.1.1/go.mod h1:iWYemzK0ajTxntxqsQPlzVKEmkEqR01P/5LXpMmCGKk=
 github.com/stretchr/testify v1.8.4 h1:CcVxjf3Q8PM0mHUKJCdn+eZZtm5yQwehR5yeSVQQcUk=
 golang.org/x/time v0.5.0 h1:o7cqy6amK/52YcAKIPlM3a+Fpj35zvRj2TP+e1xFSfk=
 golang.org/x/time v0.5.0/go.mod h1:3BpzKBy/shNhVucY/MWOyx10tF3SFh9QdLuxbVysPQM=

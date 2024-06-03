@@ -92,6 +92,7 @@ func isConfigValid(conf *Config) *Config {
 			// Set the number of workers to the default minimum number of workers
 			conf.num = int(defaultMinWorkerNum)
 		}
+
 		// 如果回调函数为 nil
 		// If the callback function is nil
 		if conf.callback == nil {
@@ -99,6 +100,7 @@ func isConfigValid(conf *Config) *Config {
 			// Set the callback function to an empty callback function
 			conf.callback = NewEmptyCallback()
 		}
+		
 		// 如果消息处理函数为 nil
 		// If the message handling function is nil
 		if conf.handleFunc == nil {
