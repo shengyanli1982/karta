@@ -10,15 +10,13 @@ import (
 	"golang.org/x/time/rate"
 )
 
-// / 立即执行的常量，时间长度为0
-// Constant for immediate execution, time duration is 0
-const immediate = time.Duration(0)
+// 定义一个常量 immediate，值为 0，用于表示立即执行的意思
+// Define a constant immediate, with a value of 0, used to indicate immediate execution
+const immediate = 0
 
-var (
-	// 错误类型，表示管道已经关闭
-	// Error type, indicating that the pipeline is closed
-	ErrorQueueClosed = errors.New("pipeline is closed")
-)
+// 定义一个错误类型 ErrorQueueClosed，表示管道已经关闭
+// Define an error type ErrorQueueClosed, indicating that the pipeline is closed
+var ErrorQueueClosed = errors.New("pipeline is closed")
 
 var (
 	// 默认的工作者空闲超时时间，单位为毫秒，值为10秒
@@ -43,7 +41,7 @@ var (
 type Pipeline struct {
 	// queue 是一个 DelayingQueueInterface 类型的变量，用于存储和处理数据的队列
 	// queue is a variable of type DelayingQueueInterface, which is the queue used for storing and processing data
-	queue DelayingQueueInterface
+	queue DelayingQueue
 
 	// config 是一个 Config 类型的指针，表示管道的配置设置
 	// config is a pointer of type Config, which represents the configuration settings for the pipeline
@@ -84,7 +82,7 @@ type Pipeline struct {
 
 // NewPipeline 是一个函数，它创建并返回一个新的 Pipeline
 // NewPipeline is a function, it creates and returns a new Pipeline
-func NewPipeline(queue DelayingQueueInterface, conf *Config) *Pipeline {
+func NewPipeline(queue DelayingQueue, conf *Config) *Pipeline {
 	// 如果队列为 nil，返回 nil
 	// If the queue is nil, return nil
 	if queue == nil {
@@ -171,7 +169,7 @@ func (pl *Pipeline) Stop() {
 
 		// 停止工作队列
 		// Stop the work queue
-		pl.queue.Stop()
+		pl.queue.Shutdown()
 	})
 }
 
@@ -270,7 +268,7 @@ func (pl *Pipeline) executor() {
 
 // submit 是 Pipeline 的一个方法，它提交一个任务到管道中，可以指定处理函数和延迟时间
 // submit is a method of Pipeline, it submits a task to the pipeline, and you can specify the processing function and delay time
-func (pl *Pipeline) submit(fn MessageHandleFunc, msg any, delay time.Duration) error {
+func (pl *Pipeline) submit(fn MessageHandleFunc, msg any, delay int64) error {
 	// 如果管道已经关闭，则返回错误
 	// If the pipeline is closed, return an error
 	if pl.queue.IsClosed() {
@@ -295,11 +293,11 @@ func (pl *Pipeline) submit(fn MessageHandleFunc, msg any, delay time.Duration) e
 	if delay > 0 {
 		// 如果延迟大于 0，使用 AddAfter 方法将扩展元素添加到延迟队列中
 		// If the delay is greater than 0, use the AddAfter method to add the extended element to the delay queue
-		err = pl.queue.AddAfter(element, delay)
+		err = pl.queue.PutWithDelay(element, delay)
 	} else {
 		// 如果延迟不大于 0，使用 Add 方法将扩展元素添加到工作管道中
 		// If the delay is not greater than 0, use the Add method to add the extended element to the work pipeline
-		err = pl.queue.Add(element)
+		err = pl.queue.Put(element)
 	}
 	if err != nil {
 		// 如果添加失败，则将扩展元素放回对象池
@@ -339,7 +337,7 @@ func (pl *Pipeline) Submit(msg any) error {
 // SubmitAfterWithFunc 是 Pipeline 的一个方法，它在指定的延迟时间后提交一个带有自定义处理函数的任务
 // SubmitAfterWithFunc is a method of Pipeline, it submits a task with a custom processing function after a specified delay time
 func (pl *Pipeline) SubmitAfterWithFunc(fn MessageHandleFunc, msg any, delay time.Duration) error {
-	return pl.submit(fn, msg, delay)
+	return pl.submit(fn, msg, delay.Milliseconds())
 }
 
 // SubmitAfter 是 Pipeline 的一个方法，它在指定的延迟时间后提交一个任务

@@ -5,7 +5,7 @@ import (
 	"time"
 
 	k "github.com/shengyanli1982/karta"
-	"github.com/shengyanli1982/workqueue"
+	wkq "github.com/shengyanli1982/workqueue/v2"
 )
 
 // handleFunc 是一个处理函数，它接收一个任意类型的消息，打印该消息，然后返回该消息和nil错误。
@@ -31,7 +31,7 @@ func main() {
 
 	// 创建一个新的假延迟队列。
 	// Create a new fake delaying queue.
-	queue := k.NewFakeDelayingQueue(workqueue.NewSimpleQueue(nil))
+	queue := k.NewFakeDelayingQueue(wkq.NewQueue(nil))
 
 	// 使用队列和配置创建一个新的管道。
 	// Create a new pipeline using the queue and configuration.

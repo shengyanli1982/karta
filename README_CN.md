@@ -1,9 +1,7 @@
 [English](./README.md) | 中文
 
 <div align="center">
-	<h1>Karta</h1>
-	<p>一个紧凑的模块，旨在批量处理任务并在并发环境中异步处理，提高效率和吞吐量。</p>
-	<img src="assets/logo.png" alt="logo" width="450px">
+	<img src="assets/logo.png" alt="logo" width="550px">
 </div>
 
 [![Go Report Card](https://goreportcard.com/badge/github.com/shengyanli1982/karta)](https://goreportcard.com/report/github.com/shengyanli1982/karta)
@@ -128,21 +126,38 @@ $ go run demo.go
 `Pipeline` 需要一个实现了 `DelayingQueueInterface` 接口的队列对象来存储任务。
 
 ```go
-// QueueInterface 是一个接口，定义了队列的基本操作，如添加元素、获取元素、标记元素完成、停止队列和判断队列是否已经关闭
-// QueueInterface is an interface that defines basic operations of a queue, such as adding elements, getting elements, marking elements as done, stopping the queue, and checking if the queue is closed
-type QueueInterface interface {
-	Add(element any) error         // 添加元素 (Add element)
-	Get() (element any, err error) // 获取元素 (Get element)
-	Done(element any)              // 标记元素完成 (Mark element as done)
-	Stop()                         // 停止队列 (Stop the queue)
-	IsClosed() bool                // 判断队列是否已经关闭 (Check if the queue is closed)
+// Queue 接口定义了一个队列应该具备的基本操作。
+// The Queue interface defines the basic operations that a queue should have.
+type Queue = interface {
+	// Put 方法用于将元素放入队列。
+	// The Put method is used to put an element into the queue.
+	Put(value interface{}) error
+
+	// Get 方法用于从队列中获取元素。
+	// The Get method is used to get an element from the queue.
+	Get() (value interface{}, err error)
+
+	// Done 方法用于标记元素处理完成。
+	// The Done method is used to mark the element as done.
+	Done(value interface{})
+
+	// Shutdown 方法用于关闭队列。
+	// The Shutdown method is used to shut down the queue.
+	Shutdown()
+
+	// IsClosed 方法用于检查队列是否已关闭。
+	// The IsClosed method is used to check if the queue is closed.
+	IsClosed() bool
 }
 
-// DelayingQueueInterface 是一个接口，它继承了 QueueInterface，并添加了一个新的方法 AddAfter，用于在指定的延迟后添加元素到队列
-// DelayingQueueInterface is an interface that inherits from QueueInterface and adds a new method AddAfter for adding elements to the queue after a specified delay
-type DelayingQueueInterface interface {
-	QueueInterface
-	AddAfter(element any, delay time.Duration) error // 在指定的延迟后添加元素到队列 (Add an element to the queue after a specified delay)
+// DelayingQueue 接口继承了 Queue 接口，并添加了一个 PutWithDelay 方法，用于将元素延迟放入队列。
+// The DelayingQueue interface inherits from the Queue interface and adds a PutWithDelay method to put an element into the queue with delay.
+type DelayingQueue = interface {
+	Queue
+
+	// PutWithDelay 方法用于将元素延迟放入队列。
+	// The PutWithDelay method is used to put an element into the queue with delay.
+	PutWithDelay(value interface{}, delay int64) error
 }
 ```
 
@@ -169,7 +184,7 @@ import (
 	"time"
 
 	k "github.com/shengyanli1982/karta"
-	"github.com/shengyanli1982/workqueue"
+	wkq "github.com/shengyanli1982/workqueue/v2"
 )
 
 // handleFunc 是一个处理函数，它接收一个任意类型的消息，打印该消息，然后返回该消息和nil错误。
@@ -195,7 +210,7 @@ func main() {
 
 	// 创建一个新的假延迟队列。
 	// Create a new fake delaying queue.
-	queue := k.NewFakeDelayingQueue(workqueue.NewSimpleQueue(nil))
+	queue := k.NewFakeDelayingQueue(wkq.NewQueue(nil))
 
 	// 使用队列和配置创建一个新的管道。
 	// Create a new pipeline using the queue and configuration.
