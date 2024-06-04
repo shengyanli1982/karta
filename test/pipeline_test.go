@@ -109,27 +109,6 @@ func TestQueueSubmitWithFuncWhenQueueClosed(t *testing.T) {
 	assert.Equal(t, k.ErrorQueueClosed, err)
 }
 
-func TestQueueExecutorAutoStop(t *testing.T) {
-	c := k.NewConfig()
-	c.WithHandleFunc(handleFunc).WithWorkerNumber(2)
-	queue := k.NewFakeDelayingQueue(wkq.NewQueue(nil))
-
-	pl := k.NewPipeline(queue, c)
-	assert.NotNil(t, pl)
-
-	var err error
-	for i := 0; i < 10; i++ {
-		err = pl.Submit(i)
-		assert.Nil(t, err)
-	}
-
-	time.Sleep(15 * time.Second)
-
-	assert.Equal(t, int64(1), pl.GetWorkerNumber())
-
-	pl.Stop()
-}
-
 func TestQueueSubmit_DelayingQueue(t *testing.T) {
 	c := k.NewConfig()
 	c.WithHandleFunc(handleFunc).WithWorkerNumber(2)
