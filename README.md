@@ -123,7 +123,7 @@ Idle workers are automatically closed after `defaultWorkerIdleTimeout` (10 secon
 
 When a task is submitted using `Submit` or `SubmitWithFunc`, it is processed by an idle worker. If there are no idle workers, a new worker is created. The number of running workers increases to the value set by the `WithWorkerNumber` method if there are not enough running workers.
 
-`Pipeline` requires a queue object that implements the `DelayingQueueInterface` interface to store tasks.
+`Pipeline` requires a queue object that implements the `DelayingQueue` interface to store tasks.
 
 ```go
 // Queue 接口定义了一个队列应该具备的基本操作。
