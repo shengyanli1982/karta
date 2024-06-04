@@ -24,48 +24,68 @@ var (
 // Define the message handle function type
 type MessageHandleFunc = func(msg any) (any, error)
 
-// 定义配置类型
-// Define the config type
+// Config 是一个结构体，用于配置消息处理的参数
+// Config is a struct used to configure parameters for message processing
 type Config struct {
-	num        int               // 工作者数量
-	callback   Callback          // 回调函数
-	result     bool              // 是否返回结果
-	handleFunc MessageHandleFunc // 消息处理函数
+
+	// num 是一个整数，表示工作者的数量
+	// num is an integer that represents the number of workers
+	num int
+
+	// callback 是一个 Callback 类型的变量，表示消息处理前后的回调函数
+	// callback is a variable of type Callback, which represents the callback function before and after message processing
+	callback Callback
+
+	// result 是一个布尔值，表示是否需要返回处理结果
+	// result is a boolean value that indicates whether a processing result needs to be returned
+	result bool
+
+	// handleFunc 是一个 MessageHandleFunc 类型的变量，表示消息处理函数
+	// handleFunc is a variable of type MessageHandleFunc, which represents the message handling function
+	handleFunc MessageHandleFunc
 }
 
-// 创建一个新的配置，初始化工作者数量，回调函数和消息处理函数
-// Create a new config, initialize the number of workers, callback function and message handle function
+// NewConfig 是一个函数，用于创建并返回一个新的 Config 结构体的指针
+// NewConfig is a function that creates and returns a pointer to a new Config struct
 func NewConfig() *Config {
 	return &Config{
-		num:        int(defaultMinWorkerNum),
-		callback:   NewEmptyCallback(),
+		// num 是工作线程的数量，默认为 defaultMinWorkerNum
+		// num is the number of worker threads, default is defaultMinWorkerNum
+		num: int(defaultMinWorkerNum),
+
+		// callback 是一个 Callback 类型的变量，用于处理消息前后的回调函数，默认为空
+		// callback is a variable of type Callback, used for callback functions before and after handling messages, default is empty
+		callback: NewEmptyCallback(),
+
+		// handleFunc 是一个 MessageHandleFunc 类型的变量，用于处理消息的函数，默认为 DefaultMsgHandleFunc
+		// handleFunc is a variable of type MessageHandleFunc, used for the function to handle messages, default is DefaultMsgHandleFunc
 		handleFunc: DefaultMsgHandleFunc,
 	}
 }
 
-// 设置工作者数量
-// Set the number of workers
+// WithWorkerNumber 是一个方法，用于设置 Config 结构体中的 num 变量
+// WithWorkerNumber is a method used to set the num variable in the Config struct
 func (c *Config) WithWorkerNumber(num int) *Config {
 	c.num = num
 	return c
 }
 
-// 设置回调函数
-// Set the callback function
+// WithCallback 是一个方法，用于设置 Config 结构体中的 callback 变量
+// WithCallback is a method used to set the callback variable in the Config struct
 func (c *Config) WithCallback(callback Callback) *Config {
 	c.callback = callback
 	return c
 }
 
-// 设置消息处理函数
-// Set the message handle function
+// WithHandleFunc 是一个方法，用于设置 Config 结构体中的 handleFunc 变量
+// WithHandleFunc is a method used to set the handleFunc variable in the Config struct
 func (c *Config) WithHandleFunc(fn MessageHandleFunc) *Config {
 	c.handleFunc = fn
 	return c
 }
 
-// 设置是否返回结果
-// Set whether to return the result
+// WithResult 是一个方法，用于设置 Config 结构体中的 result 变量
+// WithResult is a method used to set the result variable in the Config struct
 func (c *Config) WithResult() *Config {
 	c.result = true
 	return c
@@ -100,7 +120,7 @@ func isConfigValid(conf *Config) *Config {
 			// Set the callback function to an empty callback function
 			conf.callback = NewEmptyCallback()
 		}
-		
+
 		// 如果消息处理函数为 nil
 		// If the message handling function is nil
 		if conf.handleFunc == nil {
