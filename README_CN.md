@@ -123,7 +123,7 @@ $ go run demo.go
 
 当使用 `Submit` 或 `SubmitWithFunc` 提交任务时，它会由一个空闲的工作线程处理。如果没有空闲的工作线程，将创建一个新的工作线程。如果运行中的工作线程不足，运行中的工作线程数量将增加到 `WithWorkerNumber` 方法设置的值。
 
-`Pipeline` 需要一个实现了 `DelayingQueueInterface` 接口的队列对象来存储任务。
+`Pipeline` 需要一个实现了 `DelayingQueue` 接口的队列对象来存储任务。
 
 ```go
 // Queue 接口定义了一个队列应该具备的基本操作。
