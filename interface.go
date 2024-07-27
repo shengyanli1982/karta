@@ -27,9 +27,7 @@ func (emptyCallback) OnAfter(msg, result any, err error) {}
 
 // NewEmptyCallback 是一个函数，它创建并返回一个新的 emptyCallback
 // NewEmptyCallback is a function that creates and returns a new emptyCallback
-func NewEmptyCallback() Callback {
-	return &emptyCallback{}
-}
+func NewEmptyCallback() Callback { return &emptyCallback{} }
 
 // Queue 接口定义了一个队列应该具备的基本操作。
 // The Queue interface defines the basic operations that a queue should have.
@@ -67,9 +65,7 @@ type DelayingQueue = interface {
 
 // FakeDelayingQueue 是一个结构体，它实现了 DelayingQueueInterface 接口，但是它的 AddAfter 方法实际上并不会延迟添加元素
 // FakeDelayingQueue is a struct that implements the DelayingQueueInterface interface, but its AddAfter method does not actually delay adding values
-type FakeDelayingQueue struct {
-	Queue
-}
+type FakeDelayingQueue struct{ Queue }
 
 // NewFakeDelayingQueue 是一个函数，它创建并返回一个新的 FakeDelayingQueue
 // NewFakeDelayingQueue is a function that creates and returns a new FakeDelayingQueue
