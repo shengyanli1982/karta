@@ -7,6 +7,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/shengyanli1982/karta/internal"
 	"golang.org/x/time/rate"
 )
 
@@ -71,9 +72,9 @@ type Pipeline struct {
 	// runningCount is a variable of type atomic.Int64, used for tracking the pipeline's resource consumption
 	runningCount atomic.Int64
 
-	// elementPool 是一个 ElemmentExtPool 类型的指针，用于管理扩展元素的池
-	// elementPool is a pointer of type ElemmentExtPool, which is the pool for managing extended elements
-	elementPool *elemmentExtPool
+	// elementPool 是一个 ElementExtPool 类型的指针，用于管理扩展元素的池
+	// elementPool is a pointer of type ElementExtPool, which is the pool for managing extended elements
+	elementPool *internal.ElementExtPool
 
 	// workerLimit 是一个 rate.Limiter 类型的指针，用于创建新工作者的资源速率限制
 	// workerLimit is a pointer of type rate.Limiter, which is the resource rate limit for creating new workers
@@ -122,7 +123,7 @@ func NewPipeline(queue DelayingQueue, conf *Config) *Pipeline {
 
 		// elementpool 是一个扩展元素的对象池，用于复用扩展元素
 		// elementpool is an object pool of extended elements, used to reuse extended elements
-		elementPool: newElementExtPool(),
+		elementPool: internal.NewElementExtPool(),
 
 		// wlimit 是一个速率限制器，用于限制新工作者的创建速率
 		// wlimit is a rate limiter, used to limit the creation rate of new workers
@@ -228,7 +229,7 @@ func (pl *Pipeline) executor() {
 
 			// 数据类型转换，将获取的元素转换为扩展元素
 			// Data type conversion, convert the obtained element to an extended element
-			element := o.(*elementExt)
+			element := o.(*internal.ElementExt)
 
 			// 获取数据
 			// Get data
