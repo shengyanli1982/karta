@@ -25,6 +25,12 @@ Why `Karta`? In my work, I often need to process a large number of jobs. I wante
 -   Lightweight with no external dependencies
 -   Supports callback functions for custom actions
 
+# Design
+
+Following the design, the architecture UML diagram for `Karta` is shown below:
+
+![design](assets/architecture.png)
+
 # Installation
 
 ```bash

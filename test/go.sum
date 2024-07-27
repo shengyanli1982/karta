@@ -2,8 +2,8 @@ github.com/davecgh/go-spew v1.1.1 h1:vj9j/u1bqnvCEfJOwUhtlOARqs3+rkHYY13jYWTU97c
 github.com/davecgh/go-spew v1.1.1/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=
 github.com/pmezard/go-difflib v1.0.0 h1:4DBwDE0NGyQoBHbLQYPwSUPoCMWR5BEzIk/f1lZbAQM=
 github.com/pmezard/go-difflib v1.0.0/go.mod h1:iKH77koFhYxTK1pcRnkKkqfTogsbg7gZNVY4sRDYZ/4=
-github.com/shengyanli1982/workqueue/v2 v2.1.1 h1:Hv2DXPHCb421Vsr1f3AfPoMO/pS3DEcoFf1RTA+kEoU=
-github.com/shengyanli1982/workqueue/v2 v2.1.1/go.mod h1:iWYemzK0ajTxntxqsQPlzVKEmkEqR01P/5LXpMmCGKk=
+github.com/shengyanli1982/workqueue/v2 v2.2.4 h1:e70OP1FJm77SuH24i3j1duJT3nx+OYTPFDrgOR6dUkI=
+github.com/shengyanli1982/workqueue/v2 v2.2.4/go.mod h1:iWYemzK0ajTxntxqsQPlzVKEmkEqR01P/5LXpMmCGKk=
 github.com/stretchr/testify v1.8.4 h1:CcVxjf3Q8PM0mHUKJCdn+eZZtm5yQwehR5yeSVQQcUk=
 github.com/stretchr/testify v1.8.4/go.mod h1:sz/lmYIOXD/1dqDmKjjqLyZ2RngseejIcXlSw2iwfAo=
 golang.org/x/time v0.5.0 h1:o7cqy6amK/52YcAKIPlM3a+Fpj35zvRj2TP+e1xFSfk=
