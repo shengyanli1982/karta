@@ -73,7 +73,7 @@ type Pipeline struct {
 
 	// elementPool 是一个 ElemmentExtPool 类型的指针，用于管理扩展元素的池
 	// elementPool is a pointer of type ElemmentExtPool, which is the pool for managing extended elements
-	elementPool *ElemmentExtPool
+	elementPool *elemmentExtPool
 
 	// workerLimit 是一个 rate.Limiter 类型的指针，用于创建新工作者的资源速率限制
 	// workerLimit is a pointer of type rate.Limiter, which is the resource rate limit for creating new workers
@@ -122,7 +122,7 @@ func NewPipeline(queue DelayingQueue, conf *Config) *Pipeline {
 
 		// elementpool 是一个扩展元素的对象池，用于复用扩展元素
 		// elementpool is an object pool of extended elements, used to reuse extended elements
-		elementPool: NewElementExtPool(),
+		elementPool: newElementExtPool(),
 
 		// wlimit 是一个速率限制器，用于限制新工作者的创建速率
 		// wlimit is a rate limiter, used to limit the creation rate of new workers
@@ -228,7 +228,7 @@ func (pl *Pipeline) executor() {
 
 			// 数据类型转换，将获取的元素转换为扩展元素
 			// Data type conversion, convert the obtained element to an extended element
-			element := o.(*ElementExt)
+			element := o.(*elementExt)
 
 			// 获取数据
 			// Get data

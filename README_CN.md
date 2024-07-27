@@ -25,6 +25,12 @@
 -   轻量级，无外部依赖
 -   支持自定义操作的回调函数
 
+# 设计
+
+根据设计，`Karta` 的架构 UML 图如下所示：
+
+![design](assets/architecture.png)
+
 # 安装
 
 ```bash

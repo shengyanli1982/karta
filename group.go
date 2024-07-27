@@ -7,14 +7,14 @@ import (
 
 // 元素内存池
 // Element memory pool
-var elementpool = NewElementPool()
+var elementpool = newElementPool()
 
 // Group 是一个用于批量处理任务的结构体
 // Group is a struct for batch processing tasks
 type Group struct {
 	// elements 是一个 Element 类型的切片，用于存储 Group 中的所有元素
 	// elements is a slice of type Element, used to store all elements in the Group
-	elements []*Element
+	elements []*element
 
 	// lock 是一个互斥锁，用于保护 Group 结构体的并发访问
 	// lock is a mutex, used to protect concurrent access to the Group struct
@@ -53,7 +53,7 @@ func NewGroup(conf *Config) *Group {
 	gr := Group{
 		// elements 是一个 Element 类型的切片，用于存储 Group 中的所有元素
 		// elements is a slice of type Element, used to store all elements in the Group
-		elements: []*Element{},
+		elements: []*element{},
 
 		// lock 是一个互斥锁，用于保护 Group 结构体的并发访问
 		// lock is a mutex, used to protect concurrent access to the Group struct
@@ -115,7 +115,7 @@ func (gr *Group) prepare(elements []any) {
 
 	// 创建待处理的数据对象数组
 	// Create an array of data objects to be processed
-	gr.elements = make([]*Element, count)
+	gr.elements = make([]*element, count)
 
 	// 创建工作元素
 	// Create worker elements
