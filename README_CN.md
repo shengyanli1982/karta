@@ -45,7 +45,7 @@ go get github.com/shengyanli1982/karta
 
 `Karta` 库提供了一个配置对象，允许您自定义批处理的行为。配置对象提供以下方法进行配置：
 
--   `WithWorkerNumber`：设置工作线程的数量。默认值为 `1`，最大值为 `524280`。
+-   `WithWorkerNumber`：设置工作线程的数量。默认值为 `2`，最大值为 `524280`。
 -   `WithCallback`：设置回调函数。默认值为 `&emptyCallback{}`。
 -   `WithHandleFunc`：设置处理函数。默认值为 `defaultMsgHandleFunc`。
 -   `WithResult`：指定是否记录所有任务的结果。默认值为 `false`，仅适用于 `Group`。

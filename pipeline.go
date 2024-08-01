@@ -26,7 +26,7 @@ var (
 
 	// 默认的工作者状态扫描间隔，值为3秒
 	// Default worker status scan interval, value is 3 seconds
-	defaultWorkerStatusScanInterval = 3 * time.Second
+	defaultWorkerStateScanInterval = 3 * time.Second
 
 	// 默认新建工作者的突发数量，值为8
 	// Default burst of new workers, value is 8
@@ -183,87 +183,85 @@ func (pl *Pipeline) executor() {
 
 	// 启动空闲超时定时器，每隔一段时间检查一次
 	// Start the idle timeout timer, check every once in a while
-	ticker := time.NewTicker(defaultWorkerStatusScanInterval)
+	stateScanTicker := time.NewTicker(defaultWorkerStateScanInterval)
 
 	// 当函数退出时，减少工作者数量，减少 WaitGroup 的计数，并关闭定时器
 	// When the function exits, reduce the number of workers, decrease the count of WaitGroup, and close the timer
 	defer func() {
 		pl.runningCount.Add(-1)
 		pl.wg.Done()
-		ticker.Stop()
+		stateScanTicker.Stop()
 	}()
 
-	// 循环执行，直到收到 context 的 Done 信号
-	// Loop execution until the Done signal from the context is received
-	for {
-		select {
-		case <-pl.ctx.Done():
-			// 收到 Done 信号，返回，结束执行
-			// Received the Done signal, return, end execution
-			return
+	// 循环，如果队列有关闭，则继续执行
+	// Loop, continue execution if the queue is closed
+	for !pl.queue.IsClosed() {
+		// 从工作管道中获取一个扩展元素
+		// Get an extended element from the work pipeline
+		o, err := pl.queue.Get()
 
-		case <-ticker.C:
-			// 如果空闲超时，判断当前工作者数量是否超过最小工作者数量，如果超过则返回
-			// If idle timeout, judge whether the current number of workers exceeds the minimum number of workers, if it exceeds, return
-			if pl.timer.Load()-updateAt >= defaultWorkerIdleTimeout && pl.runningCount.Load() > defaultMinWorkerNum {
+		// 如果获取失败，进入信号判断
+		// If the acquisition fails, enter the signal judgment
+		if err != nil {
+			select {
+			case <-pl.ctx.Done():
+				// 收到 Done 信号，返回，结束执行
+				// Received the Done signal, return, end execution
 				return
+
+			case <-stateScanTicker.C:
+				// 如果空闲超时，判断当前工作者数量是否超过最小工作者数量，如果超过则返回
+				// If idle timeout, judge whether the current number of workers exceeds the minimum number of workers, if it exceeds, return
+				if pl.timer.Load()-updateAt >= defaultWorkerIdleTimeout && pl.runningCount.Load() > defaultMinWorkerNum {
+					return
+				}
 			}
 
-		default:
-			// 如果工作管道已经关闭，则返回
-			// If the work pipeline is closed, return
-			if pl.queue.IsClosed() {
-				return
-			}
-
-			// 从工作管道中获取一个扩展元素
-			// Get an extended element from the work pipeline
-			o, err := pl.queue.Get()
-			if err != nil {
-				break
-			}
-
-			// 标记工作管道完成
-			// Mark the work pipeline as completed
-			pl.queue.Done(o)
-
-			// 数据类型转换，将获取的元素转换为扩展元素
-			// Data type conversion, convert the obtained element to an extended element
-			element := o.(*internal.ElementExt)
-
-			// 获取数据
-			// Get data
-			data := element.GetData()
-
-			// 执行回调函数 OnBefore
-			// Execute the callback function OnBefore
-			pl.config.callback.OnBefore(data)
-
-			// 获取消息处理函数
-			// Get the message handling function
-			handleFunc := element.GetHandleFunc()
-
-			// 如果指定的处理函数不为 nil，则执行该处理函数，否则执行配置中的处理函数
-			// If the specified processing function is not nil, execute this processing function, otherwise execute the processing function in the configuration
-			var result any
-			if handleFunc != nil {
-				result, err = handleFunc(data)
-			} else {
-				result, err = pl.config.handleFunc(data)
-			}
-
-			// 执行回调函数 OnAfter
-			// Execute the callback function OnAfter
-			pl.config.callback.OnAfter(data, result, err)
-
-			// 将扩展元素放回对象池
-			// Put the extended element back into the object pool
-			pl.elementPool.Put(element)
-
-			// 更新任务执行的时间点
-			// Update the time point of task execution
-			updateAt = pl.timer.Load()
+			// 继续循环以处理下一个任务
+			// Continue the loop to process the next task
+			continue
 		}
+
+		// 标记工作管道完成
+		// Mark the work pipeline as completed
+		pl.queue.Done(o)
+
+		// 数据类型转换，将获取的元素转换为扩展元素
+		// Data type conversion, convert the obtained element to an extended element
+		element := o.(*internal.ElementExt)
+
+		// 获取数据
+		// Get data
+		data := element.GetData()
+
+		// 执行回调函数 OnBefore
+		// Execute the callback function OnBefore
+		pl.config.callback.OnBefore(data)
+
+		// 获取消息处理函数
+		// Get the message handling function
+		handleFunc := element.GetHandleFunc()
+
+		// 如果指定的处理函数不为 nil，则执行该处理函数，否则执行配置中的处理函数
+		// If the specified processing function is not nil, execute this processing function, otherwise execute the processing function in the configuration
+		var result any
+		if handleFunc != nil {
+			result, err = handleFunc(data)
+		} else {
+			result, err = pl.config.handleFunc(data)
+		}
+
+		// 执行回调函数 OnAfter
+		// Execute the callback function OnAfter
+		pl.config.callback.OnAfter(data, result, err)
+
+		// 将扩展元素放回对象池
+		// Put the extended element back into the object pool
+		pl.elementPool.Put(element)
+
+		// 更新任务执行的时间点
+		// Update the time point of task execution
+		updateAt = pl.timer.Load()
 	}
 }
 
