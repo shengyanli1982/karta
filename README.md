@@ -45,7 +45,7 @@ go get github.com/shengyanli1982/karta
 
 The `Karta` library provides a config object that allows you to customize the behavior of the batch processing. The config object offers the following methods for configuration:
 
--   `WithWorkerNumber`: Sets the number of workers. The default value is `1`, with a maximum of `524280`.
+-   `WithWorkerNumber`: Sets the number of workers. The default value is `2`, with a maximum of `524280`.
 -   `WithCallback`: Sets the callback function. The default value is `&emptyCallback{}`.
 -   `WithHandleFunc`: Sets the handle function. The default value is `defaultMsgHandleFunc`.
 -   `WithResult`: Specifies whether to record the results of all tasks. The default value is `false`, and it only applies to `Group`.

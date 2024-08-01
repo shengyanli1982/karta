@@ -7,7 +7,7 @@ import "math"
 const (
 	// 默认的最小工作者数量
 	// Default minimum number of workers
-	defaultMinWorkerNum = int64(1)
+	defaultMinWorkerNum = int64(2)
 
 	// 默认的最大工作者数量
 	// Default maximum number of workers
@@ -107,7 +107,7 @@ func isConfigValid(conf *Config) *Config {
 	if conf != nil {
 		// 如果工作者数量小于等于0或者大于默认的最大工作者数量
 		// If the number of workers is less than or equal to 0 or greater than the default maximum number of workers
-		if conf.num <= 0 || conf.num > int(defaultMaxWorkerNum) {
+		if conf.num < int(defaultMinWorkerNum) || conf.num > int(defaultMaxWorkerNum) {
 			// 设置工作者数量为默认的最小工作者数量
 			// Set the number of workers to the default minimum number of workers
 			conf.num = int(defaultMinWorkerNum)
