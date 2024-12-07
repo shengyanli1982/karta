@@ -48,6 +48,8 @@ func (group *Group) cleanup() {
 			group.elements[i] = nil
 		}
 	}
+
+	group.elements = group.elements[:0] // clear the elements slice, helps with GC
 }
 
 // Stop gracefully stops the group and releases resources
@@ -157,6 +159,7 @@ func (group *Group) execute() []any {
 	// Wait for all workers to complete
 	// 等待所有工作协程完成
 	group.wg.Wait()
+
 	return taskResults
 }
 

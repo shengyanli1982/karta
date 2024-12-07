@@ -190,3 +190,38 @@ func TestGroup_Map_StopAndReuse(t *testing.T) {
 	assert.Equal(t, 3, len(r1))
 	g.Stop()
 }
+
+// TestGroup_Map_MultipleCalls tests multiple consecutive calls to Map
+func TestGroup_Map_MultipleCalls(t *testing.T) {
+	c := k.NewConfig()
+	c.WithHandleFunc(handleFunc).WithWorkerNumber(4).WithResult()
+
+	g := k.NewGroup(c)
+	assert.NotNil(t, g)
+
+	// 第一次调用：处理小数据集
+	r0 := g.Map([]any{1, 2})
+	assert.Equal(t, 2, len(r0))
+	assert.Equal(t, 1, r0[0])
+	assert.Equal(t, 2, r0[1])
+
+	// 第二次调用：处理空数据集
+	r1 := g.Map([]any{})
+	assert.Nil(t, r1)
+
+	// 第三次调用：处理较大数据集
+	input := []any{3, 4, 5, 6, 7}
+	r2 := g.Map(input)
+	assert.Equal(t, 5, len(r2))
+	for i := 0; i < 5; i++ {
+		assert.Equal(t, i+3, r2[i])
+	}
+
+	// 第四次调用：再次处理小数据集
+	r3 := g.Map([]any{8, 9})
+	assert.Equal(t, 2, len(r3))
+	assert.Equal(t, 8, r3[0])
+	assert.Equal(t, 9, r3[1])
+
+	g.Stop()
+}
