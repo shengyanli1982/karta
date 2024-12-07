@@ -11,374 +11,274 @@ import (
 	"golang.org/x/time/rate"
 )
 
-// 定义一个常量 immediate，值为 0，用于表示立即执行的意思
-// Define a constant immediate, with a value of 0, used to indicate immediate execution
-const immediate = 0
-
-// 定义一个错误类型 ErrorQueueClosed，表示管道已经关闭
-// Define an error type ErrorQueueClosed, indicating that the pipeline is closed
-var ErrorQueueClosed = errors.New("pipeline is closed")
-
-var (
-	// 默认的工作者空闲超时时间，单位为毫秒，值为10秒
-	// Default worker idle timeout, in milliseconds, value is 10 seconds
-	defaultWorkerIdleTimeout = (10 * time.Second).Milliseconds()
-
-	// 默认的工作者状态扫描间隔，值为3秒
-	// Default worker status scan interval, value is 3 seconds
-	defaultWorkerStateScanInterval = 3 * time.Second
-
-	// 默认新建工作者的突发数量，值为8
-	// Default burst of new workers, value is 8
-	defaultNewWorkersBurst = 8
-
-	// 默认每秒新建工作者的数量，值为4
-	// Default number of new workers per second, value is 4
-	defaultNewWorkersPerSecond = 4
+// 常量定义 Constants definition
+const (
+	immediateDelay        = 0 // 立即执行的迟值 Immediate execution delay value
+	defaultMinWorkerCount = 1 // 默认最小工作协程数 Default minimum number of worker goroutines
 )
 
-// Pipeline 是一个结构体，表示管道，用于存储和处理数据
-// Pipeline is a struct that represents a pipeline, used for storing and processing data
+// 变量定义 Variables definition
+var (
+	ErrorQueueClosed          = errors.New("pipeline is closed")  // 管道关闭错误 Pipeline closed error
+	defaultWorkerIdleTimeout  = (10 * time.Second).Milliseconds() // 默认工作协程空闲超时时间 Default worker idle timeout
+	defaultWorkerScanInterval = 3 * time.Second                   // 默认工作协程扫描间隔 Default worker scan interval
+	defaultWorkerBurstLimit   = 8                                 // 默认工作协程突发限制 Default worker burst limit
+	defaultWorkerSpawnRate    = 4                                 // 默认工作协程生成速率 Default worker spawn rate
+)
+
+// Pipeline 结构体定义了一个消息处理管道
+// Pipeline struct defines a message processing pipeline
 type Pipeline struct {
-	// queue 是一个 DelayingQueueInterface 类型的变量，用于存储和处理数据的队列
-	// queue is a variable of type DelayingQueueInterface, which is the queue used for storing and processing data
-	queue DelayingQueue
-
-	// config 是一个 Config 类型的指针，表示管道的配置设置
-	// config is a pointer of type Config, which represents the configuration settings for the pipeline
-	config *Config
-
-	// wg 是一个 sync.WaitGroup 类型的变量，用于管理 goroutines
-	// wg is a variable of type sync.WaitGroup, used for managing goroutines
-	wg sync.WaitGroup
-
-	// once 是一个 sync.Once 类型的变量，用于确保初始化只执行一次
-	// once is a variable of type sync.Once, used for ensuring initialization is performed only once
-	once sync.Once
-
-	// ctx 是一个 context.Context 类型的变量，用于管理管道生命周期
-	// ctx is a variable of type context.Context, used for managing the lifecycle of the pipeline
-	ctx context.Context
-
-	// cancel 是一个 context.CancelFunc 类型的变量，用于取消管道的函数
-	// cancel is a variable of type context.CancelFunc, which is the function for canceling the pipeline
-	cancel context.CancelFunc
-
-	// timer 是一个 atomic.Int64 类型的变量，用于跟踪管道计时器
-	// timer is a variable of type atomic.Int64, used for tracking the pipeline's timer
-	timer atomic.Int64
-
-	// runningCount 是一个 atomic.Int64 类型的变量，用于跟踪管道资源消耗
-	// runningCount is a variable of type atomic.Int64, used for tracking the pipeline's resource consumption
-	runningCount atomic.Int64
-
-	// elementPool 是一个 ElementExtPool 类型的指针，用于管理扩展元素的池
-	// elementPool is a pointer of type ElementExtPool, which is the pool for managing extended elements
-	elementPool *internal.ElementExtPool
-
-	// workerLimit 是一个 rate.Limiter 类型的指针，用于创建新工作者的资源速率限制
-	// workerLimit is a pointer of type rate.Limiter, which is the resource rate limit for creating new workers
-	workerLimit *rate.Limiter
+	queue        DelayingQueue            // 延迟队列 Delaying queue
+	config       *Config                  // 配置信息 Configuration
+	wg           sync.WaitGroup           // 等待组 Wait group
+	once         sync.Once                // 确保只执行一次 Ensure single execution
+	ctx          context.Context          // 上下文 Context
+	cancel       context.CancelFunc       // 取消函数 Cancel function
+	timer        atomic.Int64             // 计时器 Timer
+	runningCount atomic.Int64             // 运行中的工作协程数量 Number of running workers
+	elementPool  *internal.ElementExtPool // 元素池 Element pool
+	workerLimit  *rate.Limiter            // 工作协程限制器 Worker limiter
 }
 
-// NewPipeline 是一个函数，它创建并返回一个新的 Pipeline
-// NewPipeline is a function, it creates and returns a new Pipeline
-func NewPipeline(queue DelayingQueue, conf *Config) *Pipeline {
-	// 如果队列为 nil，返回 nil
-	// If the queue is nil, return nil
+// NewPipeline creates a new pipeline instance with the given queue and configuration
+// NewPipeline 使用给定的队列和配置创建一个新的管道实例
+func NewPipeline(queue DelayingQueue, config *Config) *Pipeline {
+	// Check if queue is nil, return nil if true
+	// 检查队列是否为空，如果为空则返回 nil
 	if queue == nil {
 		return nil
 	}
 
-	// 检查配置是否有效，如果无效则返回一个默认的配置
-	// Check if the configuration is valid, if not, return a default configuration
-	conf = isConfigValid(conf)
+	// Validate and normalize configuration
+	// 验证并规范化配置
+	config = isConfigValid(config)
 
-	// 创建一个新的 Pipeline
-	// Create a new Pipeline
-	pl := Pipeline{
-		// queue 是一个工作队列，用于存储待处理的任务
-		// queue is a work queue used to store tasks to be processed
-		queue: queue,
+	// Create context with cancellation
+	// 创建带有取消功能的上下文
+	ctx, cancel := context.WithCancel(context.Background())
 
-		// config 是 Pipeline 的配置，包括处理函数、回调函数等
-		// config is the configuration of Pipeline, including processing functions, callback functions, etc.
-		config: conf,
-
-		// wg 是一个 WaitGroup，用于等待所有的工作完成
-		// wg is a WaitGroup, used to wait for all work to be completed
-		wg: sync.WaitGroup{},
-
-		// once 是一个 Once，用于确保某个操作只执行一次，例如停止 Pipeline
-		// once is a Once, used to ensure that an operation is performed only once, such as stopping the Pipeline
-		once: sync.Once{},
-
-		// timer 是一个原子整数，用于存储 Pipeline 的时间戳
-		// timer is an atomic integer used to store the timestamp of the Pipeline
-		timer: atomic.Int64{},
-
-		// rc 是一个原子整数，用于存储当前正在运行的工作者数量
-		// rc is an atomic integer used to store the number of workers currently running
-		runningCount: atomic.Int64{},
-
-		// elementpool 是一个扩展元素的对象池，用于复用扩展元素
-		// elementpool is an object pool of extended elements, used to reuse extended elements
+	// Initialize pipeline instance with basic components
+	// 初始化管道实例的基本组件
+	pipeline := &Pipeline{
+		queue:       queue,
+		config:      config,
 		elementPool: internal.NewElementExtPool(),
-
-		// wlimit 是一个速率限制器，用于限制新工作者的创建速率
-		// wlimit is a rate limiter, used to limit the creation rate of new workers
-		workerLimit: rate.NewLimiter(rate.Limit(defaultNewWorkersPerSecond), defaultNewWorkersBurst),
+		// Create rate limiter for worker spawning with default settings
+		// 使用默认设置创建工作协程生成的速率限制器
+		workerLimit: rate.NewLimiter(rate.Limit(defaultWorkerSpawnRate), defaultWorkerBurstLimit),
+		ctx:         ctx,
+		cancel:      cancel,
 	}
 
-	// 创建一个新的 context，并设置取消函数
-	// Create a new context and set the cancel function
-	pl.ctx, pl.cancel = context.WithCancel(context.Background())
+	// Initialize timer with current timestamp
+	// 使用当前时间戳初始化计时器
+	pipeline.timer.Store(time.Now().UnixMilli())
 
-	// 设置管道的计时器
-	// Set the pipeline's timer
-	pl.timer.Store(time.Now().UnixMilli())
+	// Set initial running worker count
+	// 设置初始运行的工作协程数量
+	pipeline.runningCount.Store(1)
 
-	// 启动一个工作者
-	// Start a worker
-	pl.runningCount.Store(1)
-	pl.wg.Add(1)
-	go pl.executor()
+	// Start background goroutines for execution and timer update
+	// 启动用于执行和计时器更新的后台协程
+	pipeline.wg.Add(2)
+	go pipeline.executor()
+	go pipeline.updateTimer()
 
-	// 启动一个时间定时器
-	// Start a time timer
-	pl.wg.Add(1)
-	go pl.updateTimer()
-
-	// 返回新创建的 Pipeline
-	// Return the newly created Pipeline
-	return &pl
+	return pipeline
 }
 
-// Stop 是 Pipeline 的一个方法，它用于停止管道
-// Stop is a method of Pipeline, it is used to stop the pipeline
-func (pl *Pipeline) Stop() {
-	// 使用 sync.Once 确保管道只被停止一次
-	// Use sync.Once to ensure that the pipeline is stopped only once
-	pl.once.Do(func() {
-		// 调用 context 的 cancel 函数，发送取消信号
-		// Call the cancel function of context to send a cancellation signal
-		pl.cancel()
-
-		// 等待所有的工作者完成
-		// Wait for all workers to complete
-		pl.wg.Wait()
-
-		// 停止工作队列
-		// Stop the work queue
-		pl.queue.Shutdown()
+// Stop 停止管道的运行
+// Stop stops the pipeline
+func (pipeline *Pipeline) Stop() {
+	pipeline.once.Do(func() {
+		pipeline.cancel()
+		pipeline.wg.Wait()
+		pipeline.queue.Shutdown()
 	})
 }
 
-// executor 是 Pipeline 的一个方法，它执行工作管道中的任务
-// executor is a method of Pipeline, it executes tasks in the work pipeline
-func (pl *Pipeline) executor() {
-	// 获取任务执行的启动时间点
-	// Get the start time of task execution
-	updateAt := pl.timer.Load()
+// handleMessage 处理单个消息
+// handleMessage 处理单个消息
+func (pipeline *Pipeline) handleMessage(element *internal.ElementExt) {
+	// Get message data
+	// 获取消息数据
+	data := element.GetData()
 
-	// 启动空闲超时定时器，每隔一段时间检查一次
-	// Start the idle timeout timer, check every once in a while
-	stateScanTicker := time.NewTicker(defaultWorkerStateScanInterval)
+	// Execute callback before message processing
+	// 执行消息处理前的回调函数
+	pipeline.config.callback.OnBefore(data)
 
-	// 当函数退出时，减少工作者数量，减少 WaitGroup 的计数，并关闭定时器
-	// When the function exits, reduce the number of workers, decrease the count of WaitGroup, and close the timer
+	var (
+		result any
+		err    error
+	)
+
+	// Check if there's a custom handler function, use it if exists, otherwise use default handler
+	// 判断是否有自定义处理函数，如果有则使用自定义函数，否则使用默认处理函数
+	if handleFunc := element.GetHandleFunc(); handleFunc != nil {
+		result, err = handleFunc(data)
+	} else {
+		result, err = pipeline.config.handleFunc(data)
+	}
+
+	// Execute callback after message processing
+	// 执行消息处理后的回调函数
+	pipeline.config.callback.OnAfter(data, result, err)
+
+	// Return the element to the pool
+	// 将元素放回对象池
+	pipeline.elementPool.Put(element)
+}
+
+// executor 执行器，负责处理队列中的消息
+// executor 执行器，负责处理队列中的消息
+func (pipeline *Pipeline) executor() {
+	// Record last update time
+	// 记录上次更新时间
+	lastUpdateTime := pipeline.timer.Load()
+
+	// Create state scan ticker
+	// 创建状态扫描定时器
+	stateScanTicker := time.NewTicker(defaultWorkerScanInterval)
+
+	// Ensure resource cleanup and counter update
+	// 确保资源清理和计数更新
 	defer func() {
-		pl.runningCount.Add(-1)
-		pl.wg.Done()
+		pipeline.runningCount.Add(-1)
+		pipeline.wg.Done()
 		stateScanTicker.Stop()
 	}()
 
-	// 循环，如果队列有关闭，则继续执行
-	// Loop, continue execution if the queue is closed
-	for !pl.queue.IsClosed() {
-		// 从工作管道中获取一个扩展元素
-		// Get an extended element from the work pipeline
-		o, err := pl.queue.Get()
-
-		// 如果获取失败，进入信号判断
-		// If the acquisition fails, enter the signal judgment
+	// Continue processing queue messages until queue is closed
+	// 持续处理队列消息，直到队列关闭
+	for !pipeline.queue.IsClosed() {
+		// Get element from queue
+		// 从队列获取元素
+		element, err := pipeline.queue.Get()
 		if err != nil {
 			select {
-			case <-pl.ctx.Done():
-				// 收到 Done 信号，返回，结束执行
-				// Received the Done signal, return, end execution
+			// Check if need to exit
+			// 检查是否需要退出
+			case <-pipeline.ctx.Done():
 				return
-
+			// Check worker goroutine status
+			// 检查工作协程状态
 			case <-stateScanTicker.C:
-				// 如果空闲超时，判断当前工作者数量是否超过最小工作者数量，如果超过则返回
-				// If idle timeout, judge whether the current number of workers exceeds the minimum number of workers, if it exceeds, return
-				if pl.timer.Load()-updateAt >= defaultWorkerIdleTimeout && pl.runningCount.Load() > defaultMinWorkerNum {
+				// Exit if idle time exceeds threshold and running workers count is greater than minimum
+				// 如果空闲时间超过阈值且运行的工作协程数量大于最小值，则退出
+				if pipeline.timer.Load()-lastUpdateTime >= defaultWorkerIdleTimeout &&
+					pipeline.runningCount.Load() > defaultMinWorkerCount {
 					return
 				}
 			}
-
-			// 继续循环以处理下一个任务
-			// Continue the loop to process the next task
 			continue
 		}
 
-		// 标记工作管道完成
-		// Mark the work pipeline as completed
-		pl.queue.Done(o)
-
-		// 数据类型转换，将获取的元素转换为扩展元素
-		// Data type conversion, convert the obtained element to an extended element
-		element := o.(*internal.ElementExt)
-
-		// 获取数据
-		// Get data
-		data := element.GetData()
-
-		// 执行回调函数 OnBefore
-		// Execute the callback function OnBefore
-		pl.config.callback.OnBefore(data)
-
-		// 获取消息处理函数
-		// Get the message handling function
-		handleFunc := element.GetHandleFunc()
-
-		// 如果指定的处理函数不为 nil，则执行该处理函数，否则执行配置中的处理函数
-		// If the specified processing function is not nil, execute this processing function, otherwise execute the processing function in the configuration
-		var result any
-		if handleFunc != nil {
-			result, err = handleFunc(data)
-		} else {
-			result, err = pl.config.handleFunc(data)
-		}
-
-		// 执行回调函数 OnAfter
-		// Execute the callback function OnAfter
-		pl.config.callback.OnAfter(data, result, err)
-
-		// 将扩展元素放回对象池
-		// Put the extended element back into the object pool
-		pl.elementPool.Put(element)
-
-		// 更新任务执行的时间点
-		// Update the time point of task execution
-		updateAt = pl.timer.Load()
+		// Mark element as done
+		// 标记元素已处理
+		pipeline.queue.Done(element)
+		// Process the message
+		// 处理消息
+		pipeline.handleMessage(element.(*internal.ElementExt))
+		// Update last processing time
+		// 更新最后处理时间
+		lastUpdateTime = pipeline.timer.Load()
 	}
 }
 
-// submit 是 Pipeline 的一个方法，它提交一个任务到管道中，可以指定处理函数和延迟时间
-// submit is a method of Pipeline, it submits a task to the pipeline, and you can specify the processing function and delay time
-func (pl *Pipeline) submit(fn MessageHandleFunc, msg any, delay int64) error {
-	// 如果管道已经关闭，则返回错误
-	// If the pipeline is closed, return an error
-	if pl.queue.IsClosed() {
+// submit 提交消息到管道
+// submit 提交消息到管道
+func (pipeline *Pipeline) submit(handleFunc MessageHandleFunc, message any, delay int64) error {
+	// Check if queue is closed
+	// 检查队列是否已关闭
+	if pipeline.queue.IsClosed() {
 		return ErrorQueueClosed
 	}
 
-	// 从对象池中获取一个扩展元素
-	// Get an extended element from the object pool
-	element := pl.elementPool.Get()
+	// Get element from object pool
+	// 从对象池获取元素
+	element := pipeline.elementPool.Get()
+	// Set message data and handler function
+	// 设置消息数据和处理函数
+	element.SetData(message)
+	element.SetHandleFunc(handleFunc)
 
-	// 使用 SetData 方法设置扩展元素的数据
-	// Use the SetData method to set the data of the extended element
-	element.SetData(msg)
-
-	// 使用 SetHandleFunc 方法设置扩展元素的处理函数
-	// Use the SetHandleFunc method to set the processing function of the extended element
-	element.SetHandleFunc(fn)
-
-	// 将扩展元素添加到工作管道中, 如果延迟大于 0, 则添加到延迟队列中
-	// Add the extended element to the work pipeline, if the delay is greater than 0, add it to the delay queue
 	var err error
+	// Choose submission method based on delay time
+	// 根据延迟时间选择提交方式
 	if delay > 0 {
-		// 如果延迟大于 0，使用 AddAfter 方法将扩展元素添加到延迟队列中
-		// If the delay is greater than 0, use the AddAfter method to add the extended element to the delay queue
-		err = pl.queue.PutWithDelay(element, delay)
+		// Submit with delay
+		// 延迟提交
+		err = pipeline.queue.PutWithDelay(element, delay)
 	} else {
-		// 如果延迟不大于 0，使用 Add 方法将扩展元素添加到工作管道中
-		// If the delay is not greater than 0, use the Add method to add the extended element to the work pipeline
-		err = pl.queue.Put(element)
+		// Submit immediately
+		// 立即提交
+		err = pipeline.queue.Put(element)
 	}
-	if err != nil {
-		// 如果添加失败，则将扩展元素放回对象池
-		// If the addition fails, put the extended element back into the object pool
-		pl.elementPool.Put(element)
 
-		// 返回错误
-		// Return error
+	// If submission fails, return element to pool
+	// 如果提交失败，返回元素到对象池
+	if err != nil {
+		pipeline.elementPool.Put(element)
 		return err
 	}
 
-	// 判断当前工作管道中的任务数量是否超足够, 如果不足则启动一个新的工作者
-	// Determine whether the number of tasks in the current work pipeline is sufficient, if not, start a new worker
-	if int64(pl.config.num) > pl.runningCount.Load() && pl.workerLimit.Allow() {
-		pl.runningCount.Add(1)
-		pl.wg.Add(1)
-		go pl.executor()
+	// Check if need to create new worker goroutine
+	// Condition: current worker count is less than configured number and within limiter allowance
+	// 检查是否需要创建新的工作协程
+	// 条件：当前工作协程数小于配置的数量且���超过限制器限制
+	if int64(pipeline.config.num) > pipeline.runningCount.Load() && pipeline.workerLimit.Allow() {
+		pipeline.runningCount.Add(1)
+		pipeline.wg.Add(1)
+		go pipeline.executor()
 	}
 
-	// 正确执行，返回 nil
-	// Execute correctly, return nil
 	return nil
 }
 
-// SubmitWithFunc 是 Pipeline 的一个方法，它提交一个带有自定义处理函数的任务
-// SubmitWithFunc is a method of Pipeline, it submits a task with a custom processing function
-func (pl *Pipeline) SubmitWithFunc(fn MessageHandleFunc, msg any) error {
-	return pl.submit(fn, msg, immediate)
+// SubmitWithFunc 使用自定义处理函数提交消息
+// SubmitWithFunc submits a message with a custom handler function
+func (pipeline *Pipeline) SubmitWithFunc(fn MessageHandleFunc, msg any) error {
+	return pipeline.submit(fn, msg, immediateDelay)
 }
 
-// Submit 是 Pipeline 的一个方法，它提交一个任务
-// Submit is a method of Pipeline, it submits a task
-func (pl *Pipeline) Submit(msg any) error {
-	return pl.SubmitWithFunc(nil, msg)
+// Submit 提交消息使用默认处理函数
+// Submit submits a message using the default handler function
+func (pipeline *Pipeline) Submit(msg any) error {
+	return pipeline.SubmitWithFunc(nil, msg)
 }
 
-// SubmitAfterWithFunc 是 Pipeline 的一个方法，它在指定的延迟时间后提交一个带有自定义处理函数的任务
-// SubmitAfterWithFunc is a method of Pipeline, it submits a task with a custom processing function after a specified delay time
-func (pl *Pipeline) SubmitAfterWithFunc(fn MessageHandleFunc, msg any, delay time.Duration) error {
-	return pl.submit(fn, msg, delay.Milliseconds())
+// SubmitAfterWithFunc 延迟提交消息并使用自定义处理函数
+// SubmitAfterWithFunc submits a message with delay using a custom handler function
+func (pipeline *Pipeline) SubmitAfterWithFunc(fn MessageHandleFunc, msg any, delay time.Duration) error {
+	return pipeline.submit(fn, msg, delay.Milliseconds())
 }
 
-// SubmitAfter 是 Pipeline 的一个方法，它在指定的延迟时间后提交一个任务
-// SubmitAfter is a method of Pipeline, it submits a task after a specified delay time
-func (pl *Pipeline) SubmitAfter(msg any, delay time.Duration) error {
-	return pl.SubmitAfterWithFunc(nil, msg, delay)
+// SubmitAfter 延迟提交消息使用默认处理函数
+// SubmitAfter submits a message with delay using the default handler function
+func (pipeline *Pipeline) SubmitAfter(msg any, delay time.Duration) error {
+	return pipeline.SubmitAfterWithFunc(nil, msg, delay)
 }
 
-// / updateTimer 是 Pipeline 的一个方法，它是一个定时器，用于更新 Pipeline 的时间戳
-// updateTimer is a method of Pipeline, it is a timer that updates the timestamp of Pipeline
-func (pl *Pipeline) updateTimer() {
-	// 创建一个新的定时器，每秒触发一次
-	// Create a new timer that triggers every second
+// updateTimer 更新管道计时器
+// updateTimer updates the pipeline timer
+func (pipeline *Pipeline) updateTimer() {
 	ticker := time.NewTicker(time.Second)
-
-	// 使用 defer 来确保在函数结束时停止定时器并完成 WaitGroup 的计数
-	// Use defer to ensure that the timer is stopped and the count of WaitGroup is completed when the function ends
-	defer func() {
-		ticker.Stop()
-		pl.wg.Done()
-	}()
-
-	// 循环，直到收到 context 的 Done 信号
-	// Loop until the Done signal from the context is received
+	defer ticker.Stop()
+	defer pipeline.wg.Done()
 	for {
 		select {
-		case <-pl.ctx.Done():
-			// 收到 Done 信号，返回，结束定时器
-			// Received the Done signal, return, end the timer
+		case <-pipeline.ctx.Done():
 			return
 		case <-ticker.C:
-			// 定时器触发，更新 Pipeline 的时间戳
-			// The timer is triggered, update the timestamp of Pipeline
-			pl.timer.Store(time.Now().UnixMilli())
+			pipeline.timer.Store(time.Now().UnixMilli())
 		}
 	}
 }
 
-// GetWorkerNumber 是 Pipeline 的一个方法，它返回当前正在运行的工作者数量
-// GetWorkerNumber is a method of Pipeline, it returns the number of workers currently running
-func (pl *Pipeline) GetWorkerNumber() int64 {
-	// 使用原子操作来获取当前正在运行的工作者数量
-	// Use atomic operations to get the number of workers currently running
-	return pl.runningCount.Load()
+// GetWorkerNumber 获取当前工作协程数量
+// GetWorkerNumber gets the current number of worker goroutines
+func (pipeline *Pipeline) GetWorkerNumber() int64 {
+	return pipeline.runningCount.Load()
 }

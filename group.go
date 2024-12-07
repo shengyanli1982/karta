@@ -3,254 +3,157 @@ package karta
 import (
 	"context"
 	"sync"
+	"sync/atomic"
 
 	"github.com/shengyanli1982/karta/internal"
 )
 
-// 元素内存池
-// Element memory pool
-var elementpool = internal.NewElementPool()
+// elementPool is a global pool for reusing Element objects
+// elementPool 是一个全局的 Element 对象复用池
+var elementPool = internal.NewElementPool()
 
-// Group 是一个用于批量处理任务的结构体
-// Group is a struct for batch processing tasks
+// Group represents a worker group that processes tasks concurrently
+// Group 表示一个并发处理任务的工作组
 type Group struct {
-	// elements 是一个 Element 类型的切片，用于存储 Group 中的所有元素
-	// elements is a slice of type Element, used to store all elements in the Group
-	elements []*internal.Element
-
-	// lock 是一个互斥锁，用于保护 Group 结构体的并发访问
-	// lock is a mutex, used to protect concurrent access to the Group struct
-	lock sync.Mutex
-
-	// config 是 Group 的配置，包括处理函数、回调函数等
-	// config is the configuration of Group, including processing functions, callback functions, etc.
-	config *Config
-
-	// wg 是一个 WaitGroup，用于等待所有的工作完成
-	// wg is a WaitGroup, used to wait for all work to be completed
-	wg sync.WaitGroup
-
-	// once 是一个 Once，用于确保某个操作只执行一次，例如停止 Group
-	// once is a Once, used to ensure that an operation is performed only once, such as stopping the Group
-	once sync.Once
-
-	// ctx 是一个上下文，用于管理 goroutine 的生命周期
-	// ctx is a context, used to manage the lifetimes of goroutines
-	ctx context.Context
-
-	// cancel 是一个取消函数，用于取消 ctx
-	// cancel is a function to cancel ctx
-	cancel context.CancelFunc
+	elements []*internal.Element // slice to store task elements / 存储任务元素的切片
+	lock     sync.Mutex          // mutex for protecting shared resources / 用于保护共享资源的互斥锁
+	config   *Config             // configuration for the group / 工作组的配置信息
+	wg       sync.WaitGroup      // wait group for synchronizing goroutines / 用于同步 goroutine 的等待组
+	once     sync.Once           // ensures Stop is called only once / 确保 Stop 只被调用一次
+	ctx      context.Context     // context for cancellation / 用于取消操作的上下文
+	cancel   context.CancelFunc  // function to cancel the context / 取消上下文的函数
 }
 
-// 创建一个新的批量处理任务
-// Create a new batch processing task
-func NewGroup(conf *Config) *Group {
-	// 验证配置是否有效，如果无效则返回一个默认的配置
-	// Validate the configuration, if invalid, return a default configuration
-	conf = isConfigValid(conf)
-
-	// 初始化 Group 结构体
-	// Initialize the Group struct
-	gr := Group{
-		// elements 是一个 Element 类型的切片，用于存储 Group 中的所有元素
-		// elements is a slice of type Element, used to store all elements in the Group
-		elements: []*internal.Element{},
-
-		// lock 是一个互斥锁，用于保护 Group 结构体的并发访问
-		// lock is a mutex, used to protect concurrent access to the Group struct
-		lock: sync.Mutex{},
-
-		// config 是 Group 的配置，包括处理函数、回调函数等
-		// config is the configuration of Group, including processing functions, callback functions, etc.
-		config: conf,
-
-		// wg 是一个 WaitGroup，用于等待所有的工作完成
-		// wg is a WaitGroup, used to wait for all work to be completed
-		wg: sync.WaitGroup{},
-
-		// once 是一个 Once，用于确保某个操作只执行一次，例如停止 Group
-		// once is a Once, used to ensure that an operation is performed only once, such as stopping the Group
-		once: sync.Once{},
+// NewGroup creates a new Group with the given configuration
+// NewGroup 使用给定的配置创建一个新的工作组
+func NewGroup(config *Config) *Group {
+	config = isConfigValid(config)
+	group := &Group{
+		elements: make([]*internal.Element, 0),
+		config:   config,
 	}
-
-	// 创建一个新的上下文，该上下文在调用 cancel 函数时被取消
-	// Create a new context that is cancelled when the cancel function is called
-	gr.ctx, gr.cancel = context.WithCancel(context.Background())
-
-	return &gr
+	group.ctx, group.cancel = context.WithCancel(context.Background())
+	return group
 }
 
-// 停止批量处理任务
-// Stop the batch processing task
-func (gr *Group) Stop() {
-	// 使用 once.Do 方法确保以下操作只执行一次
-	// Use the once.Do method to ensure that the following operations are performed only once
-	gr.once.Do(func() {
-		// 调用 cancel 方法取消上下文，这将导致所有依赖该上下文的 goroutine 收到取消信号
-		// Call the cancel method to cancel the context, which will cause all goroutines that depend on this context to receive a cancellation signal
-		gr.cancel()
+// cleanupElements cleans up remaining elements and returns them to the pool
+// cleanupElements 清理剩余的元素并将它们返回到对象池
+func (group *Group) cleanupElements(startIndex int64) {
+	group.lock.Lock()
+	defer group.lock.Unlock()
 
-		// 调用 wg.Wait 方法等待所有 goroutine 完成
-		// Call the wg.Wait method to wait for all goroutines to complete
-		gr.wg.Wait()
+	for i := startIndex; i < int64(len(group.elements)); i++ {
+		if group.elements[i] != nil {
+			elementPool.Put(group.elements[i])
+			group.elements[i] = nil
+		}
+	}
+}
 
-		// 调用 lock 方法获取 Group 结构体的互斥锁，以保护并发访问
-		// Call the lock method to acquire the mutex of the Group struct to protect concurrent access
-		gr.lock.Lock()
-
-		// 重置工作元素数组的长度为 0，这将帮助垃圾回收器回收这些元素
-		// Reset the length of the worker element array to 0, which will help the garbage collector to recycle these elements
-		gr.elements = gr.elements[:0]
-
-		// 调用 Unlock 方法释放 Group 结构体的互斥锁，以结束对其的保护
-		// Call the Unlock method to release the mutex of the Group struct to end its protection
-		gr.lock.Unlock()
+// Stop gracefully stops the group and releases resources
+// Stop 优雅地停止工作组并释放资源
+func (group *Group) Stop() {
+	group.once.Do(func() {
+		group.cancel()
+		group.wg.Wait()
+		group.cleanupElements(0)
 	})
 }
 
-// 准备工作元素
-// Prepare worker elements
-func (gr *Group) prepare(elements []any) {
+// prepare initializes the elements slice with data from the input
+// prepare 使用输入数据初始化元素切片
+func (group *Group) prepare(elements []any) {
 	count := len(elements)
-	gr.lock.Lock()
-
-	// 创建待处理的数据对象数组
-	// Create an array of data objects to be processed
-	gr.elements = make([]*internal.Element, count)
-
-	// 创建工作元素
-	// Create worker elements
+	group.elements = make([]*internal.Element, count)
 	for i := 0; i < count; i++ {
-		// 从内存池中获取一个元素
-		// Get an element from the memory pool
-		element := elementpool.Get()
-
-		// 设置数据和值
-		// Set the data and value
+		element := elementPool.Get()
 		element.SetData(elements[i])
 		element.SetValue(int64(i))
-
-		// 将元素放入工作元素数组
-		// Put the element into the worker element array
-		gr.elements[i] = element
+		group.elements[i] = element
 	}
-
-	gr.lock.Unlock()
 }
 
-// 执行批量处理任务
-// Execute batch processing task
-func (gr *Group) execute() []any {
-	var results []any
-	// 如果需要返回结果, 则创建结果数组
-	// If results are needed, create a results array
-	if gr.config.result {
-		results = make([]any, len(gr.elements))
+// execute processes all tasks concurrently and returns the results
+// execute 并发处理所有任务并返回结果
+func (group *Group) execute() []any {
+	// Get total number of tasks to process
+	// 获取需要处理的总任务数
+	totalTasks := len(group.elements)
+
+	// Initialize result slice if result collection is enabled
+	// 如果需要收集结果，则初始化结果切片
+	var taskResults []any
+	if group.config.result {
+		taskResults = make([]any, totalTasks)
 	}
 
-	// 启动工作者
-	// Start workers
-	gr.wg.Add(gr.config.num)
-	for i := 0; i < gr.config.num; i++ {
-		// 启动一个 goroutine
-		// Start a goroutine
-		go func() {
-			// 当函数退出时，减少等待组的计数
-			// When the function exits, reduce the count of the wait group
-			defer gr.wg.Done()
+	// Counter for tracking completed tasks, used atomically
+	// 用于原子计数已完成的任务数
+	var completedTaskCount int64 = 0
 
-			// 无限循环
-			// Infinite loop
+	// Start worker goroutines based on configured worker count
+	// 根据配置的工作者数量启动工作协程
+	group.wg.Add(group.config.num)
+	for workerID := 0; workerID < group.config.num; workerID++ {
+		go func() {
+			defer group.wg.Done()
+
 			for {
+				// Get the current task index and increment the counter atomically
+				// 获取当前任务索引并原子递增计数器
+				taskIndex := atomic.AddInt64(&completedTaskCount, 1) - 1
+				if taskIndex >= int64(totalTasks) {
+					return
+				}
+
 				select {
-				case <-gr.ctx.Done():
-					// 如果上下文已经被取消，返回
-					// If the context has been cancelled, return
+				case <-group.ctx.Done():
+					group.cleanupElements(taskIndex)
 					return
 
 				default:
-					// 使用 lock 方法获取 Group 结构体的互斥锁，以保护并发访问
-					// Use the lock method to acquire the mutex of the Group struct to protect concurrent access
-					gr.lock.Lock()
-
-					// 如果没有元素, 则返回
-					// If there are no elements, return
-					if len(gr.elements) == 0 {
-						gr.lock.Unlock()
-						return
+					// Get the current task element and immediately check if it is nil
+					// 获取当前任务元素并立即检查是否为 nil
+					current := group.elements[taskIndex]
+					if current == nil {
+						continue
 					}
 
-					// 从工作元素数组中获取一个元素
-					// Get an element from the worker element array
-					element := gr.elements[0]
+					// Set the element to nil immediately to prevent double recycling
+					// 立即将引用置为 nil，防止重复回收
+					group.elements[taskIndex] = nil
 
-					// 从工作元素数组中移除一个元素，并将第一个元素清理
-					// Remove an element from the worker element array and clean the first element
-					gr.elements[0] = nil
-					gr.elements = gr.elements[1:]
+					// Execute the task processing flow
+					// 执行任务处理流程
+					data := current.GetData()
+					group.config.callback.OnBefore(data)
+					processedResult, err := group.config.handleFunc(data)
+					group.config.callback.OnAfter(data, processedResult, err)
 
-					// 使用 Unlock 方法释放 Group 结构体的互斥锁，以结束对其的保护
-					// Use the Unlock method to release the mutex of the Group struct to end its protection
-					gr.lock.Unlock()
-
-					// 获取数据
-					// Get data
-					data := element.GetData()
-
-					// 执行回调函数 OnBefore
-					// Execute callback function OnBefore
-					gr.config.callback.OnBefore(data)
-
-					// 执行消息处理函数
-					// Execute message handle function
-					result, err := gr.config.handleFunc(data)
-
-					// 执行回调函数 OnAfter
-					// Execute callback function OnAfter
-					gr.config.callback.OnAfter(data, result, err)
-
-					// 如果需要返回结果, 则将结果放入结果数组
-					// If results are needed, put the result into the results array
-					if gr.config.result {
-						results[element.GetValue()] = result
+					if group.config.result {
+						taskResults[current.GetValue()] = processedResult
 					}
 
-					// 将元素放入内存池
-					// Put the element into the memory pool
-					elementpool.Put(element)
+					// Mark the element as done and recycle it
+					// 标记元素为已完成并回收
+					elementPool.Put(current)
 				}
 			}
 		}()
 	}
 
-	// 等待工作者完成
-	// Wait for workers to finish
-	gr.wg.Wait()
-
-	// 重置工作元素数组长度，帮助 GC
-	// Reset the length of the worker element array to help GC
-	gr.elements = gr.elements[:0]
-
-	// 返回结果数组
-	// Return the results array
-	return results
+	// Wait for all workers to complete
+	// 等待所有工作协程完成
+	group.wg.Wait()
+	return taskResults
 }
 
-// Map 方法用于批量处理元素
-// The Map method is used for batch processing of elements
-func (gr *Group) Map(elements []any) []any {
-	// 如果没有元素, 直接返回
-	// If there are no elements, return directly
+// Map processes the input elements concurrently using the configured handler function
+// Map 使用配置的处理函数并发处理输入元素
+func (group *Group) Map(elements []any) []any {
 	if len(elements) == 0 {
 		return nil
 	}
-
-	// 准备工作元素，这个步骤会将输入的元素转换为工作元素
-	// Prepare worker elements, this step will convert the input elements into worker elements
-	gr.prepare(elements)
-
-	// 执行批量处理任务，这个步骤会启动多个 goroutine 来并发处理工作元素，并返回处理结果
-	// Execute batch processing task, this step will start multiple goroutines to concurrently process worker elements and return the processing results
-	return gr.execute()
+	group.prepare(elements)
+	return group.execute()
 }
