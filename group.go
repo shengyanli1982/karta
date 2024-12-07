@@ -36,13 +36,13 @@ func NewGroup(config *Config) *Group {
 	return group
 }
 
-// cleanupElements cleans up remaining elements and returns them to the pool
-// cleanupElements 清理剩余的元素并将它们返回到对象池
-func (group *Group) cleanupElements(startIndex int64) {
+// cleanup cleans up remaining elements and returns them to the pool
+// cleanup 清理剩余的元素并将它们返回到对象池
+func (group *Group) cleanup() {
 	group.lock.Lock()
 	defer group.lock.Unlock()
 
-	for i := startIndex; i < int64(len(group.elements)); i++ {
+	for i := 0; i < len(group.elements); i++ {
 		if group.elements[i] != nil {
 			elementPool.Put(group.elements[i])
 			group.elements[i] = nil
@@ -56,21 +56,32 @@ func (group *Group) Stop() {
 	group.once.Do(func() {
 		group.cancel()
 		group.wg.Wait()
-		group.cleanupElements(0)
 	})
 }
 
 // prepare initializes the elements slice with data from the input
 // prepare 使用输入数据初始化元素切片
 func (group *Group) prepare(elements []any) {
+	group.lock.Lock()
+
+	// Get the total number of elements to process
+	// 获取需要处理的元素总数
 	count := len(elements)
+
+	// Initialize elements slice with the input length
+	// 根据输入长度初始化元素切片
 	group.elements = make([]*internal.Element, count)
+
 	for i := 0; i < count; i++ {
+		// Get element from pool and set its data and index
+		// 从对象池获取元素并设置数据和索引
 		element := elementPool.Get()
 		element.SetData(elements[i])
 		element.SetValue(int64(i))
 		group.elements[i] = element
 	}
+
+	group.lock.Unlock()
 }
 
 // execute processes all tasks concurrently and returns the results
@@ -107,8 +118,9 @@ func (group *Group) execute() []any {
 				}
 
 				select {
+				// Check if the context is done and return if true
+				// 如果上下文已完成则返回
 				case <-group.ctx.Done():
-					group.cleanupElements(taskIndex)
 					return
 
 				default:
@@ -151,9 +163,20 @@ func (group *Group) execute() []any {
 // Map processes the input elements concurrently using the configured handler function
 // Map 使用配置的处理函数并发处理输入元素
 func (group *Group) Map(elements []any) []any {
+	// Return nil if input is empty
+	// 如果输入为空则返回 nil
 	if len(elements) == 0 {
 		return nil
 	}
+
+	// Initialize elements and process them concurrently
+	// 初始化元素并并发处理
 	group.prepare(elements)
-	return group.execute()
+	result := group.execute()
+
+	// Clean up elements after processing is complete
+	// 处理完成后清理元素
+	group.cleanup()
+
+	return result
 }
