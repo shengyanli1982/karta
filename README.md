@@ -24,6 +24,7 @@ Why `Karta`? In my work, I often need to process a large number of jobs. I wante
 -   Simple and user-friendly
 -   Lightweight with no external dependencies
 -   Supports callback functions for custom actions
+-   Thread-safe, all components are designed with concurrency in mind
 
 # Design
 

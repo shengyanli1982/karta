@@ -1,6 +1,7 @@
 package test
 
 import (
+	"sync"
 	"testing"
 	"time"
 
@@ -172,25 +173,6 @@ func TestGroup_Map_WithErrorHandler(t *testing.T) {
 	g.Stop()
 }
 
-// TestGroup_Map_StopAndReuse tests stopping and reusing Group
-func TestGroup_Map_StopAndReuse(t *testing.T) {
-	c := k.NewConfig()
-	c.WithHandleFunc(handleFunc).WithWorkerNumber(2).WithResult()
-
-	g := k.NewGroup(c)
-	assert.NotNil(t, g)
-
-	// 第一次使用
-	r0 := g.Map([]any{1, 2, 3})
-	assert.Equal(t, 3, len(r0))
-	g.Stop()
-
-	// 停止后再次使用
-	r1 := g.Map([]any{4, 5, 6})
-	assert.Equal(t, 3, len(r1))
-	g.Stop()
-}
-
 // TestGroup_Map_MultipleCalls tests multiple consecutive calls to Map
 func TestGroup_Map_MultipleCalls(t *testing.T) {
 	c := k.NewConfig()
@@ -222,6 +204,60 @@ func TestGroup_Map_MultipleCalls(t *testing.T) {
 	assert.Equal(t, 2, len(r3))
 	assert.Equal(t, 8, r3[0])
 	assert.Equal(t, 9, r3[1])
+
+	g.Stop()
+}
+
+// TestGroup_Map_AfterStop tests that Map returns nil after Stop is called
+func TestGroup_Map_AfterStop(t *testing.T) {
+	c := k.NewConfig()
+	c.WithHandleFunc(handleFunc).WithWorkerNumber(2).WithResult()
+
+	g := k.NewGroup(c)
+	assert.NotNil(t, g)
+
+	// First Map call should work
+	r0 := g.Map([]any{1, 2})
+	assert.Equal(t, 2, len(r0))
+	assert.Equal(t, 1, r0[0])
+	assert.Equal(t, 2, r0[1])
+
+	// Stop the group
+	g.Stop()
+
+	// Map calls after Stop should return nil
+	r1 := g.Map([]any{3, 4})
+	assert.Nil(t, r1)
+}
+
+// TestGroup_Map_ConcurrentCalls tests concurrent calls to Map
+func TestGroup_Map_ConcurrentCalls(t *testing.T) {
+	c := k.NewConfig()
+	c.WithHandleFunc(handleFunc).WithWorkerNumber(2).WithResult()
+
+	g := k.NewGroup(c)
+	assert.NotNil(t, g)
+
+	var wg sync.WaitGroup
+	results := make([][]any, 3)
+
+	// 并发执行3个Map调用
+	for i := 0; i < 3; i++ {
+		wg.Add(1)
+		go func(index int) {
+			defer wg.Done()
+			results[index] = g.Map([]any{index * 2, index*2 + 1})
+		}(i)
+	}
+
+	wg.Wait()
+
+	// 验证结果
+	for i := 0; i < 3; i++ {
+		assert.Equal(t, 2, len(results[i]))
+		assert.Equal(t, i*2, results[i][0])
+		assert.Equal(t, i*2+1, results[i][1])
+	}
 
 	g.Stop()
 }

@@ -16,7 +16,7 @@ var elementPool = internal.NewElementPool()
 // Group 表示一个并发处理任务的工作组
 type Group struct {
 	elements []*internal.Element // slice to store task elements / 存储任务元素的切片
-	lock     sync.Mutex          // mutex for protecting shared resources / 用于保护共享资源的互斥锁
+	lock     sync.Mutex          // mutex for protecting shared resources and ensuring exclusive execution / 用于保护共享资源和确保互斥执行的互斥锁
 	config   *Config             // configuration for the group / 工作组的配置信息
 	wg       sync.WaitGroup      // wait group for synchronizing goroutines / 用于同步 goroutine 的等待组
 	once     sync.Once           // ensures Stop is called only once / 确保 Stop 只被调用一次
@@ -39,9 +39,6 @@ func NewGroup(config *Config) *Group {
 // cleanup cleans up remaining elements and returns them to the pool
 // cleanup 清理剩余的元素并将它们返回到对象池
 func (group *Group) cleanup() {
-	group.lock.Lock()
-	defer group.lock.Unlock()
-
 	for i := 0; i < len(group.elements); i++ {
 		if group.elements[i] != nil {
 			elementPool.Put(group.elements[i])
@@ -49,7 +46,7 @@ func (group *Group) cleanup() {
 		}
 	}
 
-	group.elements = group.elements[:0] // clear the elements slice, helps with GC
+	group.elements = group.elements[:0]
 }
 
 // Stop gracefully stops the group and releases resources
@@ -64,26 +61,15 @@ func (group *Group) Stop() {
 // prepare initializes the elements slice with data from the input
 // prepare 使用输入数据初始化元素切片
 func (group *Group) prepare(elements []any) {
-	group.lock.Lock()
-
-	// Get the total number of elements to process
-	// 获取需要处理的元素总数
 	count := len(elements)
-
-	// Initialize elements slice with the input length
-	// 根据输入长度初始化元素切片
 	group.elements = make([]*internal.Element, count)
 
 	for i := 0; i < count; i++ {
-		// Get element from pool and set its data and index
-		// 从对象池获取元素并设置数据和索引
 		element := elementPool.Get()
 		element.SetData(elements[i])
 		element.SetValue(int64(i))
 		group.elements[i] = element
 	}
-
-	group.lock.Unlock()
 }
 
 // execute processes all tasks concurrently and returns the results
@@ -166,6 +152,19 @@ func (group *Group) execute() []any {
 // Map processes the input elements concurrently using the configured handler function
 // Map 使用配置的处理函数并发处理输入元素
 func (group *Group) Map(elements []any) []any {
+	// Ensure exclusive execution and protect shared resources
+	// 确保互斥执行并保护共享资源
+	group.lock.Lock()
+	defer group.lock.Unlock()
+
+	// Check if the group has been stopped
+	// 检查工作组是否已经停止
+	select {
+	case <-group.ctx.Done():
+		return nil
+	default:
+	}
+
 	// Return nil if input is empty
 	// 如果输入为空则返回 nil
 	if len(elements) == 0 {

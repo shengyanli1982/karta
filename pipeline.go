@@ -55,7 +55,7 @@ func NewPipeline(queue DelayingQueue, config *Config) *Pipeline {
 	config = isConfigValid(config)
 
 	// Create context with cancellation
-	// 创建带有取消功能的上下文
+	// 创建带有取消功能的上下���
 	ctx, cancel := context.WithCancel(context.Background())
 
 	// Initialize pipeline instance with basic components
@@ -224,45 +224,39 @@ func (pipeline *Pipeline) submit(handleFunc MessageHandleFunc, message any, dela
 		return err
 	}
 
-	// Check if need to create new worker goroutine
-	// Condition: current worker count is less than configured number and within limiter allowance
-	// 检查是否需要创建新的工作协程
-	// 条件：当前工作协程数小于配置的数量且���超过限制器限制
-	if int64(pipeline.config.num) > pipeline.runningCount.Load() && pipeline.workerLimit.Allow() {
-		pipeline.runningCount.Add(1)
-		pipeline.wg.Add(1)
-		go pipeline.executor()
-	}
+	// Try to create new executor if possible
+	// 如果可能，尝试创建新的执行器
+	pipeline.tryCreateExecutor()
 
 	return nil
 }
 
-// SubmitWithFunc 使用自定义处理函数提交消息
 // SubmitWithFunc submits a message with a custom handler function
+// SubmitWithFunc 使用自定义处理函数提交消息
 func (pipeline *Pipeline) SubmitWithFunc(fn MessageHandleFunc, msg any) error {
 	return pipeline.submit(fn, msg, immediateDelay)
 }
 
-// Submit 提交消息使用默认处理函数
 // Submit submits a message using the default handler function
+// Submit 提交消息使用默认处理函数
 func (pipeline *Pipeline) Submit(msg any) error {
 	return pipeline.SubmitWithFunc(nil, msg)
 }
 
-// SubmitAfterWithFunc 延迟提交消息并使用自定义处理函数
 // SubmitAfterWithFunc submits a message with delay using a custom handler function
+// SubmitAfterWithFunc 延迟提交消息并使用自定义处理函数
 func (pipeline *Pipeline) SubmitAfterWithFunc(fn MessageHandleFunc, msg any, delay time.Duration) error {
 	return pipeline.submit(fn, msg, delay.Milliseconds())
 }
 
-// SubmitAfter 延迟提交消息使用默认处理函数
 // SubmitAfter submits a message with delay using the default handler function
+// SubmitAfter 延迟提交消息使用默认处理函数
 func (pipeline *Pipeline) SubmitAfter(msg any, delay time.Duration) error {
 	return pipeline.SubmitAfterWithFunc(nil, msg, delay)
 }
 
-// updateTimer 更新管道计时器
 // updateTimer updates the pipeline timer
+// updateTimer 更新管道计时器
 func (pipeline *Pipeline) updateTimer() {
 	ticker := time.NewTicker(time.Second)
 	defer ticker.Stop()
@@ -277,8 +271,39 @@ func (pipeline *Pipeline) updateTimer() {
 	}
 }
 
-// GetWorkerNumber 获取当前工作协程数量
 // GetWorkerNumber gets the current number of worker goroutines
+// GetWorkerNumber 获取当前工作协程数量
 func (pipeline *Pipeline) GetWorkerNumber() int64 {
 	return pipeline.runningCount.Load()
+}
+
+// tryCreateExecutor checks if a new executor can be created
+// tryCreateExecutor 检查是否可以创建新的执行器
+func (pipeline *Pipeline) tryCreateExecutor() bool {
+	// Check if current running count reaches the limit
+	// 检查当前运行数量是否达到上限
+	if current := pipeline.runningCount.Load(); current >= int64(pipeline.config.num) {
+		return false
+	}
+
+	// Check if worker token is available
+	// 检查是否能获取工作令牌
+	if !pipeline.workerLimit.Allow() {
+		return false
+	}
+
+	// Increment counter atomically
+	// 原子操作增加计数
+	newCount := pipeline.runningCount.Add(1)
+	if newCount > int64(pipeline.config.num) {
+		pipeline.runningCount.Add(-1)
+		return false
+	}
+
+	// Create new executor
+	// 创建新的执行器
+	pipeline.wg.Add(1)
+	go pipeline.executor()
+
+	return true
 }
