@@ -12,6 +12,10 @@ import (
 // 低于此值时，goroutine 调度开销超过并发收益，直接顺序执行。
 const seqThreshold = 128
 
+// spinLimit 是并发路径等待 worker 完成时的最大自旋次数，
+// 超过后切换为阻塞等待（避免长任务下忙自旋空转 CPU）。
+const spinLimit = 512
+
 // Group 是泛型同步批处理组件 (ADR-002)。
 // 使用 Map 对输入切片做并发处理，结果按输入顺序排列。
 type Group[In, Out any] struct {
@@ -83,16 +87,36 @@ func (g *Group[In, Out]) Map(ctx context.Context, inputs []In) []Result[Out] {
 	sh := g.pool.Get().(*mapWorkCtx[In, Out])
 	sh.reset(g, ctx, results, inputs, n)
 	sh.targetCount = int32(workers - 1)
+	// spawn 前快照 target：worker 通过 run 参数使用该局部值，
+	// doneCount.Add 之后不再读池化字段 targetCount——否则并发新 Map 可能
+	// Get+reset 同一已归还对象并同时写入该字段，构成数据竞态（P1-1）。
+	target := sh.targetCount
+
+	// done channel 不放入池化结构（池复用会残留已关闭 channel），
+	// 每次并发 Map 分配一次，随本次调用生命周期丢弃（1 alloc，可接受）
+	done := make(chan struct{})
 
 	// caller-as-worker：启动 (workers-1) 个 goroutine，调用方直接执行 run()，省一个 goroutine 分配。
-	for i := 0; i < workers-1; i++ {
-		go sh.run()
+	for range workers - 1 {
+		go sh.run(done, target)
 	}
 	sh.runAsCaller()
 
-	// 用 atomic counter + Gosched 替代 WaitGroup（对于短等待避免 pthread_cond_wait 开销）
-	for sh.doneCount.Load() < sh.targetCount {
+	// 有限自旋 + 阻塞等待：短任务自旋完成可避免 channel/调度切换开销，
+	// 自旋超限后切换阻塞等待，杜绝忙自旋空转 CPU。
+	// 同步论证（happens-before）：每个 worker 对池化字段的访问（runCore 内）
+	// happens-before 其 doneCount.Add；调用方观测到 doneCount == target
+	// happens-after 全部 Add，故 pool.Put happens-after 所有 worker 读写。
+	// targetCount 已在 spawn 前快照为局部变量 target；pool.Put 归还后，
+	// 本调用的任何 goroutine 不得再读写任何池化字段。
+	spun := 0
+	for sh.doneCount.Load() < target {
+		if spun >= spinLimit {
+			<-done // 最后一个完成的 worker 已 close(done)
+			break
+		}
 		runtime.Gosched()
+		spun++
 	}
 
 	g.pool.Put(sh)
@@ -103,7 +127,7 @@ func (g *Group[In, Out]) Map(ctx context.Context, inputs []In) []Result[Out] {
 // 通过 sync.Pool 复用，避免每次 Map 调用分配堆对象。
 type mapWorkCtx[In, Out any] struct {
 	doneCount   atomic.Int32 // worker 完成计数（替代 WaitGroup）
-	targetCount int32        // 需等待的 worker 数
+	targetCount int32        // 需等待的 worker 数（spawn 前一次写入；worker 使用 run 的快照参数，不再读本字段）
 	nextIdx     atomic.Int64
 	g           *Group[In, Out]
 	gctx        context.Context
@@ -132,10 +156,16 @@ func (sh *mapWorkCtx[In, Out]) reset(g *Group[In, Out], ctx context.Context, res
 	sh.n = n
 }
 
-// run 是 goroutine worker 的执行体，完成后递增 doneCount。
-func (sh *mapWorkCtx[In, Out]) run() {
+// run 是 goroutine worker 的执行体，完成后递增 doneCount；
+// 最后一个完成者（Add 返回值等于 target）关闭 done 唤醒调用方。
+// target 是调用方在 spawn 前捕获的 targetCount 快照：doneCount.Add 之后
+// 不得再读池化字段——此时调用方可能在 doneCount 达标后立即 pool.Put 归还
+// 本对象，并发新 Map 可同时重写这些字段。
+func (sh *mapWorkCtx[In, Out]) run(done chan<- struct{}, target int32) {
 	sh.runCore()
-	sh.doneCount.Add(1)
+	if sh.doneCount.Add(1) == target {
+		close(done)
+	}
 }
 
 // runAsCaller 是调用方 goroutine 的执行体（不参与 doneCount 计数）。
@@ -169,28 +199,27 @@ func (sh *mapWorkCtx[In, Out]) runCore() {
 		}
 	}()
 
-	// 优化 2：批量 panic 保护（整批次一个 defer，而非每个 item 一个 defer）
-	var panicErr error
-	var lastIdx int = -1 // 跟踪当前正在处理的索引
-	func() {
-		defer func() {
-			if r := recover(); r != nil {
-				panicErr = fmt.Errorf("karta: handler panic: %v", r)
-			}
-		}()
+	// per-item panic 保护：每项独立 recover，panic 后继续领取下一项
+	// （参考 mapSequCore 的重入结构）。保证每个输入恰好产生一个 Result，
+	// panic 项填充 Result{Err}，杜绝整批 recover 导致的 worker 提前退出与零值假成功
+	for {
+		idx := int(sh.nextIdx.Add(1) - 1)
+		if idx >= sh.n {
+			return
+		}
+		if workerCtx.Err() != nil {
+			sh.results[idx] = Result[Out]{Err: workerCtx.Err()}
+			continue
+		}
 
-		for {
-			idx := int(sh.nextIdx.Add(1) - 1)
-			if idx >= sh.n {
-				return
-			}
-			if workerCtx.Err() != nil {
-				sh.results[idx] = Result[Out]{Err: workerCtx.Err()}
-				continue
-			}
-
-			lastIdx = idx
-			// 优化 1：emptyCallback 快速路径，跳过接口方法调用
+		var panicErr error
+		func() {
+			defer func() {
+				if r := recover(); r != nil {
+					panicErr = fmt.Errorf("karta: handler panic: %v", r)
+				}
+			}()
+			// emptyCallback 快速路径，跳过接口方法调用
 			if !sh.isEmptyCb {
 				sh.cb.OnBefore(workerCtx, sh.inputs[idx])
 			}
@@ -199,12 +228,10 @@ func (sh *mapWorkCtx[In, Out]) runCore() {
 			if !sh.isEmptyCb {
 				sh.cb.OnAfter(workerCtx, sh.inputs[idx], val, err)
 			}
+		}()
+		if panicErr != nil {
+			sh.results[idx] = Result[Out]{Err: panicErr}
 		}
-	}()
-
-	// panic 处理：将 panic 发生的索引位置填充错误
-	if panicErr != nil && lastIdx >= 0 {
-		sh.results[lastIdx] = Result[Out]{Err: panicErr}
 	}
 }
 
@@ -304,5 +331,3 @@ func (g *Group[In, Out]) Stop() {
 		g.cancel()
 	}
 }
-
-

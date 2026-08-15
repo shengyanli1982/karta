@@ -2,6 +2,7 @@ package karta
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -102,5 +103,38 @@ func TestFuture_ConcurrentGet(t *testing.T) {
 	for i, r := range results {
 		require.True(t, r.Ok(), "goroutine %d", i)
 		assert.Equal(t, 42, r.Value, "goroutine %d", i)
+	}
+}
+
+// TestNewResolvedFuture_ResolveIgnored — P2 #14: NewResolvedFuture 构造时
+// claimed=true，后续 Resolve 不得覆写已读结果
+func TestNewResolvedFuture_ResolveIgnored(t *testing.T) {
+	f := NewResolvedFuture[int](Result[int]{Value: 1})
+	f.Resolve(Result[int]{Value: 2})
+	f.Resolve(Result[int]{Err: errors.New("overwrite")})
+
+	r := f.Get(context.Background())
+	assert.Equal(t, 1, r.Value, "结果应保持构造值")
+	assert.NoError(t, r.Err)
+}
+
+// TestNewResolvedFuture_ConcurrentGetResolve — -race 下并发 Get + Resolve 干净，
+// 且结果始终为构造值
+func TestNewResolvedFuture_ConcurrentGetResolve(t *testing.T) {
+	for round := range 100 {
+		f := NewResolvedFuture[int](Result[int]{Value: 42})
+		var wg sync.WaitGroup
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			f.Resolve(Result[int]{Value: 99}) // 应被 claimed 守卫忽略
+		}()
+		var r Result[int]
+		go func() {
+			defer wg.Done()
+			r = f.Get(context.Background())
+		}()
+		wg.Wait()
+		assert.Equal(t, 42, r.Value, "round %d", round)
 	}
 }

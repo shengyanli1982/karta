@@ -2,6 +2,8 @@ package middleware
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -38,8 +40,29 @@ func WithRegisterer(r prometheus.Registerer) MetricsOption {
 	return func(c *metricsConfig) { c.registerer = r }
 }
 
+// registerOrReuse 注册 collector，并在重复注册时复用已注册的实例。
+// 当相同配置的 collector 已注册（prometheus.AlreadyRegisteredError）时，
+// 返回注册器中已存在的实例，保证多个相同配置的中间件写入同一份指标，
+// 避免第二个实例持有未注册的 collector 导致指标静默丢失；
+// 复用时的类型不匹配或其他注册错误属于不可恢复的配置错误，直接 panic（fail-fast）。
+func registerOrReuse[C prometheus.Collector](r prometheus.Registerer, c C) C {
+	if err := r.Register(c); err != nil {
+		var are prometheus.AlreadyRegisteredError
+		if errors.As(err, &are) {
+			existing, ok := are.ExistingCollector.(C)
+			if !ok {
+				panic(fmt.Sprintf("karta middleware: already-registered collector type mismatch: want %T, got %T", c, are.ExistingCollector))
+			}
+			return existing
+		}
+		panic(fmt.Sprintf("karta middleware: failed to register prometheus collector: %v", err))
+	}
+	return c
+}
+
 // Metrics 指标采集中间件
 // 采集: handler 执行耗时 histogram, 成功/失败计数 counter
+// 相同配置的中间件重复构建时，复用已注册的 collector，指标在共享实例上累加
 func Metrics[In, Out any](opts ...MetricsOption) karta.Middleware[In, Out] {
 	cfg := &metricsConfig{
 		namespace:  "karta",
@@ -67,7 +90,7 @@ func Metrics[In, Out any](opts ...MetricsOption) karta.Middleware[In, Out] {
 		ConstLabels: cfg.labels,
 	}, []string{"status"})
 
-	errors := prometheus.NewCounter(prometheus.CounterOpts{
+	errCount := prometheus.NewCounter(prometheus.CounterOpts{
 		Namespace:   cfg.namespace,
 		Subsystem:   cfg.subsystem,
 		Name:        "errors_total",
@@ -75,10 +98,10 @@ func Metrics[In, Out any](opts ...MetricsOption) karta.Middleware[In, Out] {
 		ConstLabels: cfg.labels,
 	})
 
-	// 使用 Register 而非 MustRegister，忽略已注册错误（测试中可能重复创建）
-	_ = cfg.registerer.Register(duration)
-	_ = cfg.registerer.Register(total)
-	_ = cfg.registerer.Register(errors)
+	// 已注册的 collector 会被复用，注册失败等不可恢复错误直接 panic
+	duration = registerOrReuse(cfg.registerer, duration)
+	total = registerOrReuse(cfg.registerer, total)
+	errCount = registerOrReuse(cfg.registerer, errCount)
 
 	return func(next karta.Handler[In, Out]) karta.Handler[In, Out] {
 		return func(ctx context.Context, input In) (Out, error) {
@@ -89,7 +112,7 @@ func Metrics[In, Out any](opts ...MetricsOption) karta.Middleware[In, Out] {
 			duration.Observe(elapsed.Seconds())
 			if err != nil {
 				total.WithLabelValues("error").Inc()
-				errors.Inc()
+				errCount.Inc()
 			} else {
 				total.WithLabelValues("success").Inc()
 			}

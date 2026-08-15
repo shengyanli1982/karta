@@ -16,6 +16,8 @@ type Scheduler interface {
 	// Enqueue 将任务入队到调度器
 	// 若调度器已关闭，返回 ErrSchedulerClosed
 	// 若缓冲区已满，返回 ErrSchedulerFull
+	// 注意：Bounded 调度器（scheduler.NewBoundedScheduler）满时可能短暂阻塞
+	// 后再返回 ErrSchedulerFull（容量预检与 Put 之间的残余 TOCTOU，见 bounded.go）
 	Enqueue(task *TaskEnvelope) error
 
 	// Dequeue 从调度器中获取任务，支持 context 取消

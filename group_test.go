@@ -191,3 +191,92 @@ func TestGroup_Map_ConcurrentSafe(t *testing.T) {
 	}
 	wg.Wait()
 }
+
+// TestGroup_Map_ConcurrentPath_AllPanic — P1 #5: 并发路径（n > seqThreshold=128）
+// 所有输入 panic 时，每个输入恰好产生一个失败 Result，
+// 不得出现零值 Result（Err==nil）假成功
+func TestGroup_Map_ConcurrentPath_AllPanic(t *testing.T) {
+	g := NewGroup[int, int](func(ctx context.Context, v int) (int, error) {
+		panic("boom")
+	}, WithGroupWorkers(4))
+	defer g.Stop()
+
+	const n = 200 // 必须 > seqThreshold(128) 才走并发路径
+	inputs := make([]int, n)
+	for i := range inputs {
+		inputs[i] = i
+	}
+
+	results := g.Map(context.Background(), inputs)
+	require.Len(t, results, n)
+	for i, r := range results {
+		require.Error(t, r.Err, "index %d 应为失败结果，禁止零值假成功", i)
+		assert.Contains(t, r.Err.Error(), "handler panic")
+	}
+}
+
+// TestGroup_Map_ConcurrentPath_PartialPanic — 并发路径交替 panic（偶数项 panic），
+// 逐位验证：panic 项为 Err，其余项结果正确
+func TestGroup_Map_ConcurrentPath_PartialPanic(t *testing.T) {
+	g := NewGroup[int, int](func(ctx context.Context, v int) (int, error) {
+		if v%2 == 0 {
+			panic("even boom")
+		}
+		return v * 10, nil
+	}, WithGroupWorkers(4))
+	defer g.Stop()
+
+	const n = 300 // 必须 > seqThreshold(128) 才走并发路径
+	inputs := make([]int, n)
+	for i := range inputs {
+		inputs[i] = i
+	}
+
+	results := g.Map(context.Background(), inputs)
+	require.Len(t, results, n)
+	for i, r := range results {
+		if i%2 == 0 {
+			require.Error(t, r.Err, "index %d 应为 panic 失败", i)
+			assert.Contains(t, r.Err.Error(), "handler panic")
+		} else {
+			require.NoError(t, r.Err, "index %d 应成功", i)
+			assert.Equal(t, i*10, r.Value)
+		}
+	}
+}
+
+// TestGroup_Map_ConcurrentLargeBatch_Race — P1-1 回归测试：并发复用同一 Group 时，
+// 大量输入强制走并发路径（n > seqThreshold），多个调用方的 mapWorkCtx 经 sync.Pool
+// 复用。修复前 worker 在 run() 内 doneCount.Add 之后普通读池化字段 sh.targetCount，
+// 而另一调用方在 pool.Put 归还后立即普通写 targetCount，二者无同步边 → 数据竞态。
+// 本测试以 ≥8 goroutine 并发调用 Map，逐位断言确定性结果，配合 go test -race -count=10 验证。
+func TestGroup_Map_ConcurrentLargeBatch_Race(t *testing.T) {
+	// 确定性计算：平方 + 偏移，便于逐位断言
+	handler := func(ctx context.Context, v int) (int, error) {
+		return v*v + 3, nil
+	}
+	g := NewGroup[int, int](handler, WithGroupWorkers(4))
+	defer g.Stop()
+
+	const n = 500 // 必须 > seqThreshold(128) 强制并发路径
+	inputs := make([]int, n)
+	for i := range inputs {
+		inputs[i] = i
+	}
+
+	const goroutines = 16 // ≥8，放大 sync.Pool 复用碰撞概率
+	var wg sync.WaitGroup
+	for i := 0; i < goroutines; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			results := g.Map(context.Background(), inputs)
+			require.Len(t, results, n)
+			for j, r := range results {
+				require.NoError(t, r.Err, "index %d 应成功", j)
+				require.Equal(t, j*j+3, r.Value, "index %d 结果应确定", j)
+			}
+		}()
+	}
+	wg.Wait()
+}

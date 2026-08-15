@@ -102,6 +102,47 @@ func TestRetry_RetryAndRequeue(t *testing.T) {
 	s.Done(env2)
 }
 
+// TestRetry_ReusePointerResetsCount 验证指针复用场景下的计数清零：
+// 根包 TaskEnvelope 池会把同一指针用于新任务，旧任务遗留的重试计数
+// 不得串到新任务。同一指针再次 Enqueue 时计数必须从零开始。
+func TestRetry_ReusePointerResetsCount(t *testing.T) {
+	policy := workqueue.NewExponentialRetryPolicy(10*time.Millisecond, 50*time.Millisecond, -1)
+	s := NewRetryScheduler(policy)
+	defer s.Shutdown()
+
+	type retryable interface {
+		Retry(task *karta.TaskEnvelope, reason error) error
+		NumRequeues(task *karta.TaskEnvelope) int
+	}
+	rs, ok := s.(retryable)
+	require.True(t, ok)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	task := &karta.TaskEnvelope{Input: "first-lifetime"}
+	require.NoError(t, s.Enqueue(task))
+
+	// 第一个任务生命周期：出队并重试一次，累积计数
+	env, err := s.Dequeue(ctx)
+	require.NoError(t, err)
+	require.NoError(t, rs.Retry(env, errors.New("transient")))
+	assert.Equal(t, 1, rs.NumRequeues(task))
+
+	// 出队重试后的任务但不 Done，模拟任务未正常终结、指针被归还池复用
+	env2, err := s.Dequeue(ctx)
+	require.NoError(t, err)
+	require.Equal(t, task, env2)
+
+	// 同一指针承载新任务：再次入队必须清除遗留计数
+	task.Input = "second-lifetime"
+	require.NoError(t, s.Enqueue(task))
+	assert.Equal(t, 0, rs.NumRequeues(task))
+
+	// 清理在途任务，避免影响后续断言
+	s.Done(env2)
+}
+
 func TestRetry_MaxRetries_Respected(t *testing.T) {
 	// maxRetries=1: 只允许重试 1 次
 	policy := workqueue.NewExponentialRetryPolicy(10*time.Millisecond, 50*time.Millisecond, 1)

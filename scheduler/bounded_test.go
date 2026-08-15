@@ -88,8 +88,8 @@ func TestBounded_DequeueAfterShutdown(t *testing.T) {
 	assert.ErrorIs(t, err, karta.ErrSchedulerClosed)
 }
 
-func TestBounded_BlockingEnqueue(t *testing.T) {
-	// capacity=2，填满后第三次 Enqueue 应阻塞
+func TestBounded_FullReturnsErrSchedulerFull(t *testing.T) {
+	// capacity=2，填满后 Enqueue 应立即返回 ErrSchedulerFull（不阻塞）
 	s := NewBoundedScheduler(2)
 	defer s.Shutdown()
 
@@ -97,21 +97,11 @@ func TestBounded_BlockingEnqueue(t *testing.T) {
 	require.NoError(t, s.Enqueue(&karta.TaskEnvelope{Input: 2}))
 	assert.Equal(t, 2, s.Len())
 
-	// 第三次 Enqueue 应该阻塞，在另一个 goroutine 中执行
-	done := make(chan error, 1)
-	go func() {
-		done <- s.Enqueue(&karta.TaskEnvelope{Input: 3})
-	}()
+	err := s.Enqueue(&karta.TaskEnvelope{Input: 3})
+	assert.ErrorIs(t, err, karta.ErrSchedulerFull)
+	assert.Equal(t, 2, s.Len())
 
-	// 等待短暂时间确认 Enqueue 确实在阻塞
-	select {
-	case <-done:
-		t.Fatal("third Enqueue should have blocked")
-	case <-time.After(100 * time.Millisecond):
-		// 预期行为：Enqueue 在阻塞
-	}
-
-	// 消费一个任务以释放空间
+	// 消费一个任务释放空间后，Enqueue 重新成功
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 
@@ -120,43 +110,20 @@ func TestBounded_BlockingEnqueue(t *testing.T) {
 	assert.Equal(t, 1, env.Input)
 	s.Done(env)
 
-	// 第三次 Enqueue 现在应该成功
-	select {
-	case err := <-done:
-		assert.NoError(t, err)
-	case <-time.After(2 * time.Second):
-		t.Fatal("third Enqueue should have unblocked after Dequeue")
-	}
+	require.NoError(t, s.Enqueue(&karta.TaskEnvelope{Input: 3}))
+	assert.Equal(t, 2, s.Len())
 }
 
-func TestBounded_ShutdownUnblocksEnqueue(t *testing.T) {
+func TestBounded_EnqueueAfterShutdown(t *testing.T) {
 	s := NewBoundedScheduler(1)
 
-	// 填满队列
+	// 填满队列后关闭
 	require.NoError(t, s.Enqueue(&karta.TaskEnvelope{Input: 1}))
-
-	// 在另一个 goroutine 中阻塞 Enqueue
-	done := make(chan error, 1)
-	go func() {
-		done <- s.Enqueue(&karta.TaskEnvelope{Input: 2})
-	}()
-
-	// 确认 Enqueue 在阻塞
-	select {
-	case <-done:
-		t.Fatal("Enqueue should have blocked")
-	case <-time.After(100 * time.Millisecond):
-	}
-
-	// Shutdown 应唤醒阻塞的 Enqueue
 	s.Shutdown()
 
-	select {
-	case err := <-done:
-		assert.ErrorIs(t, err, karta.ErrSchedulerClosed)
-	case <-time.After(2 * time.Second):
-		t.Fatal("Shutdown should have unblocked Enqueue")
-	}
+	// 关闭优先于满：返回 ErrSchedulerClosed 而非 ErrSchedulerFull
+	err := s.Enqueue(&karta.TaskEnvelope{Input: 2})
+	assert.ErrorIs(t, err, karta.ErrSchedulerClosed)
 }
 
 func TestBounded_Len(t *testing.T) {

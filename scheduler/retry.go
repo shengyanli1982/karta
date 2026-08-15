@@ -17,6 +17,9 @@ var _ karta.Scheduler = (*retryScheduler)(nil)
 // retryScheduler 将 workqueue.RetryQueue 适配为 karta.Scheduler 接口。
 //
 // Done 标记任务成功完成并清除重试计数。
+// Enqueue 成功时会清除该指针遗留的重试计数：重试计数以指针为键，
+// 根包 TaskEnvelope 池复用指针后，旧任务的计数会串到新任务，
+// 因此每次新入队都视为新任务生命周期的开始。
 // 如需重试，通过类型断言访问 Retry 方法：
 //
 //	rs := sched.(*retryScheduler)  // 或使用接口断言
@@ -57,6 +60,13 @@ func (s *retryScheduler) Enqueue(task *karta.TaskEnvelope) error {
 		}
 		return err
 	}
+	// 指针复用防护：重试计数以 envelope 指针为键（见 retryTaskKeyFunc），
+	// 根包 TaskEnvelope 池归还并复用指针后，旧任务的计数会串到新任务。
+	// 入队成功即代表该指针开启新的任务生命周期，必须在此清除遗留计数，
+	// 保证记录在指针归还 pool 前已清零。
+	// （重试耗尽路径无需处理：workqueue.RetryQueue 在 ErrRetryExhausted
+	// 时已内部重置计数。）
+	s.queue.Forget(task)
 	select {
 	case s.notify <- struct{}{}:
 	default:
@@ -67,7 +77,7 @@ func (s *retryScheduler) Enqueue(task *karta.TaskEnvelope) error {
 func (s *retryScheduler) Dequeue(ctx context.Context) (*karta.TaskEnvelope, error) {
 	backoff := minBackoff
 	timer := time.NewTimer(backoff)
-	defer stopAndDrainTimer(timer)
+	defer timer.Stop()
 
 	for {
 		val, err := s.queue.Get()
@@ -93,7 +103,7 @@ func (s *retryScheduler) Dequeue(ctx context.Context) (*karta.TaskEnvelope, erro
 				backoff = maxBackoff
 			}
 		}
-		stopAndDrainTimer(timer)
+		// Go 1.23+ 保证 Reset 返回后不会收到旧定时值，直接重设即可
 		timer.Reset(backoff)
 	}
 }

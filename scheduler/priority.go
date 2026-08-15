@@ -85,7 +85,7 @@ func (s *priorityScheduler) Dequeue(ctx context.Context) (*karta.TaskEnvelope, e
 				backoff = maxBackoff
 			}
 		}
-		stopAndDrainTimer(timer)
+		// Go 1.23+ 保证 Reset 返回后不会收到旧定时值，直接重设即可
 		timer.Reset(backoff)
 	}
 }

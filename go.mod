@@ -1,6 +1,6 @@
 module github.com/shengyanli1982/karta/v2
 
-go 1.21
+go 1.23
 
 require (
 	github.com/prometheus/client_golang v1.21.1

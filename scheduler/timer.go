@@ -70,7 +70,7 @@ func (s *timerScheduler) Enqueue(task *karta.TaskEnvelope) error {
 func (s *timerScheduler) Dequeue(ctx context.Context) (*karta.TaskEnvelope, error) {
 	backoff := minBackoff
 	timer := time.NewTimer(backoff)
-	defer stopAndDrainTimer(timer)
+	defer timer.Stop()
 
 	for {
 		val, err := s.queue.Get()
@@ -96,7 +96,7 @@ func (s *timerScheduler) Dequeue(ctx context.Context) (*karta.TaskEnvelope, erro
 				backoff = maxBackoff
 			}
 		}
-		stopAndDrainTimer(timer)
+		// Go 1.23+ 保证 Reset 返回后不会收到旧定时值，直接重设即可
 		timer.Reset(backoff)
 	}
 }
