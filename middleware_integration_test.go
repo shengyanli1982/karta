@@ -171,6 +171,41 @@ func TestPipeline_MiddlewareChain_WithSubmitHandler(t *testing.T) {
 	assert.Equal(t, int64(1), counter.Load(), "middleware should wrap even per-task handler")
 }
 
+func TestPipeline_Middleware_WithRecovery(t *testing.T) {
+	// Pipeline 默认提交路径（Submit）走 executor 启动时预包裹 middleware 的
+	// defaultHandler。handler panic 时，recovery middleware 应先捕获并转为
+	// 错误结果，future 得到 error 而非进程崩溃，executor 自身的 recover 不触发。
+	recoveryMW := Middleware[int, string](func(next Handler[int, string]) Handler[int, string] {
+		return func(ctx context.Context, input int) (out string, err error) {
+			defer func() {
+				if rec := recover(); rec != nil {
+					out = ""
+					err = fmt.Errorf("middleware recovered: %v", rec)
+				}
+			}()
+			return next(ctx, input)
+		}
+	})
+
+	handler := func(ctx context.Context, v int) (string, error) {
+		panic("handler exploded")
+	}
+
+	sched := NewSimpleScheduler(16)
+	p := NewPipeline[int, string](handler, sched, WithPipelineMiddleware(recoveryMW))
+	require.NotNil(t, p)
+	defer p.Stop()
+
+	f, err := p.Submit(context.Background(), 1)
+	require.NoError(t, err)
+	r := f.Get(context.Background())
+	require.Error(t, r.Err)
+	// middleware recovery 捕获 panic，executor 的 recover 不再触发
+	assert.Contains(t, r.Err.Error(), "middleware recovered")
+	assert.Contains(t, r.Err.Error(), "handler exploded")
+	assert.NotContains(t, r.Err.Error(), "karta: handler panic")
+}
+
 func TestGroup_Middleware_WithRecovery(t *testing.T) {
 	// 手写 recovery middleware：若 handler panic，middleware 捕获后返回自定义错误，
 	// 而不是让 panic 传播到 safeCall 的 recover。
@@ -218,13 +253,17 @@ func TestGroup_NoMiddleware_NoOverhead(t *testing.T) {
 	}
 }
 
-func TestToMiddlewareSlice_TypeMismatchSilent(t *testing.T) {
-	// 类型不匹配的 middleware 被静默忽略，只保留类型匹配的
+func TestToMiddlewareSlice_TypeMismatchPanics(t *testing.T) {
+	// P1 #4: 类型不匹配的 middleware 不再静默忽略，fail-fast panic
 	mw1 := countMiddleware[int, int](&atomic.Int64{})    // Middleware[int, int]
 	mw2 := countMiddleware[int, string](&atomic.Int64{}) // Middleware[int, string] ← 类型不匹配
 
-	result := toMiddlewareSlice[int, int]([]any{mw1, mw2})
-	// mw2 类型为 Middleware[int, string]，断言 Middleware[int, int] 失败，被忽略
+	require.Panics(t, func() {
+		toMiddlewareSlice[int, int]([]any{mw1, mw2})
+	})
+
+	// 全部匹配时正常转换
+	result := toMiddlewareSlice[int, int]([]any{mw1})
 	assert.Len(t, result, 1)
 }
 

@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math/rand/v2"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -896,4 +898,89 @@ func TestPipeline_TrySpawn_RateLimiterReject(t *testing.T) {
 	assert.GreaterOrEqual(t, wAfter, int64(1))
 
 	time.Sleep(1500 * time.Millisecond) // wait tasks complete
+}
+
+// TestPipeline_Submit_AlreadyCancelledCtx — P1 #7: 已取消 UserCtx 的任务
+// 直接以取消错误完成，handler 不得执行
+func TestPipeline_Submit_AlreadyCancelledCtx(t *testing.T) {
+	var called atomic.Int64
+	handler := func(ctx context.Context, n int) (int, error) {
+		called.Add(1)
+		return n, nil
+	}
+	p := NewPipeline[int, int](handler, NewSimpleScheduler(16), WithPipelineWorkers(2))
+	require.NotNil(t, p)
+	defer p.Stop()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // 提交前已取消
+
+	f, err := p.Submit(ctx, 1)
+	require.NoError(t, err)
+
+	getCtx, getCancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer getCancel()
+	res := f.Get(getCtx)
+	assert.ErrorIs(t, res.Err, context.Canceled, "future 应立即得到 context.Canceled")
+	assert.Zero(t, called.Load(), "handler 不应被调用")
+
+	// pipeline 后续仍正常可用
+	f2, err := p.Submit(context.Background(), 2)
+	require.NoError(t, err)
+	res2 := f2.Get(getCtx)
+	require.NoError(t, res2.Err)
+	assert.Equal(t, 2, res2.Value)
+}
+
+// TestPipeline_SubmitStop_Stress — P1 #6 压力测试:
+// 并发 goroutine 循环 Submit/SubmitAfter(1ms)，另一 goroutine 随机时机 Stop。
+// closed 检查/pending 写入/wg.Add 同处 pendingMu 临界区，
+// -race -count=10 下不得出现 WaitGroup misuse panic 或竞态
+func TestPipeline_SubmitStop_Stress(t *testing.T) {
+	for range 10 {
+		p := NewPipeline[int, int](
+			func(ctx context.Context, n int) (int, error) { return n, nil },
+			NewSimpleScheduler(1024),
+			WithPipelineWorkers(4),
+		)
+
+		stopCh := make(chan struct{})
+		var subWG sync.WaitGroup
+		for g := range 4 {
+			subWG.Add(1)
+			go func(id int) {
+				defer subWG.Done()
+				for i := 0; ; i++ {
+					select {
+					case <-stopCh:
+						return
+					default:
+					}
+					var f *Future[int]
+					var err error
+					if i%2 == 0 {
+						f, err = p.Submit(context.Background(), id*10000+i)
+					} else {
+						f, err = p.SubmitAfter(context.Background(), id*10000+i, time.Millisecond)
+					}
+					if err != nil {
+						continue
+					}
+					_ = f.Get(context.Background())
+				}
+			}(g)
+		}
+
+		// 独立 goroutine 随机时机 Stop（幂等）
+		stopDone := make(chan struct{})
+		go func() {
+			defer close(stopDone)
+			time.Sleep(time.Duration(rand.IntN(20)+1) * time.Millisecond)
+			p.Stop()
+		}()
+
+		<-stopDone
+		close(stopCh)
+		subWG.Wait()
+	}
 }

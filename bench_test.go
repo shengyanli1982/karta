@@ -117,3 +117,59 @@ func BenchmarkScheduler_SimpleScheduler(b *testing.B) {
 		}
 	})
 }
+
+// BenchmarkGroupMap_LargeBatch — Group.Map 大批量吞吐（1000 项, 8 workers，覆盖并发等待路径）
+func BenchmarkGroupMap_LargeBatch(b *testing.B) {
+	handler := Handler[int, int](func(ctx context.Context, input int) (int, error) {
+		return input * 2, nil
+	})
+	g := NewGroup[int, int](handler, WithGroupWorkers(8))
+	defer g.Stop()
+
+	inputs := make([]int, 1000)
+	for i := range inputs {
+		inputs[i] = i
+	}
+
+	b.ResetTimer()
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		_ = g.Map(context.Background(), inputs)
+	}
+}
+
+// BenchmarkPipelineSubmit_Parallel — Pipeline.Submit + Future.Get 并发版
+func BenchmarkPipelineSubmit_Parallel(b *testing.B) {
+	handler := Handler[int, int](func(ctx context.Context, input int) (int, error) {
+		return input * 2, nil
+	})
+	sched := NewSimpleScheduler(4096)
+	p := NewPipeline[int, int](handler, sched, WithPipelineWorkers(8))
+	defer p.Stop()
+
+	b.ResetTimer()
+	b.ReportAllocs()
+	b.RunParallel(func(pb *testing.PB) {
+		i := 0
+		for pb.Next() {
+			f, err := p.Submit(context.Background(), i)
+			if err != nil {
+				b.Fatalf("Submit error: %v", err)
+			}
+			_ = f.Get(context.Background())
+			i++
+		}
+	})
+}
+
+// BenchmarkFutureThen — Pending Future + 异步 goroutine Resolve + Then 回调开销
+func BenchmarkFutureThen(b *testing.B) {
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		f := NewPendingFuture[int]()
+		go f.Resolve(Result[int]{Value: i})
+		done := make(chan struct{})
+		f.Then(func(Result[int]) { close(done) })
+		<-done
+	}
+}

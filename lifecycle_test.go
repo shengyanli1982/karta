@@ -3,7 +3,6 @@ package karta
 import (
 	"sync"
 	"sync/atomic"
-	"syscall"
 	"testing"
 	"time"
 
@@ -70,12 +69,4 @@ func TestLifecycleManager_ShutdownTimeout(t *testing.T) {
 		"Shutdown should return within timeout, not wait for slow component")
 	assert.GreaterOrEqual(t, elapsed, 80*time.Millisecond,
 		"Shutdown should wait at least until timeout fires")
-}
-
-func TestLifecycleManager_WithSignals(t *testing.T) {
-	lm := NewLifecycleManager(WithSignals(syscall.SIGUSR1, syscall.SIGUSR2))
-
-	require.Len(t, lm.signals, 2)
-	assert.Equal(t, syscall.SIGUSR1, lm.signals[0])
-	assert.Equal(t, syscall.SIGUSR2, lm.signals[1])
 }

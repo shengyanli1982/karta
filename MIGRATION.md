@@ -22,14 +22,14 @@ Karta v2 is a complete rewrite using Go generics. The API surface has changed si
 
 ## Prerequisites
 
-- **Go 1.21 or later** (v1 required Go 1.19+)
+- **Go 1.23 or later** (v1 required Go 1.19+)
 - Update your `go.mod` to use the v2 module path
 
 Verify your Go version:
 
 ```bash
 go version
-# go1.21.0 or later
+# go1.23.0 or later
 ```
 
 ---
@@ -308,7 +308,7 @@ sched := scheduler.NewDelayScheduler()
 
 | # | Change | v1 | v2 |
 |---|--------|-----|-----|
-| 1 | Go version | 1.19+ | 1.21+ |
+| 1 | Go version | 1.19+ | 1.23+ |
 | 2 | Module path | `github.com/shengyanli1982/karta` | `github.com/shengyanli1982/karta/v2` |
 | 3 | Config | `NewConfig()` builder | Removed; functional options |
 | 4 | Handler type | `func(any) (any, error)` | `func(ctx, In) (Out, error)` |

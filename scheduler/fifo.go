@@ -17,19 +17,6 @@ const (
 	maxBackoff = 500 * time.Millisecond
 )
 
-// stopAndDrainTimer 安全地停止 timer 并排空其 channel，
-// 使得后续的 timer.Reset 不会发生竞态。
-// 适用于所有 time.Timer（无论是否已触发）。
-func stopAndDrainTimer(timer *time.Timer) {
-	if !timer.Stop() {
-		// timer 已触发：排空 channel（若非 select 已消费则为空）
-		select {
-		case <-timer.C:
-		default:
-		}
-	}
-}
-
 // notifyChanCapacity 根据 CPU 数量计算 notify channel 容量，
 // 避免高吞吐下非阻塞发送丢通知；下限为 4。
 func notifyChanCapacity() int {
@@ -111,8 +98,7 @@ func (s *fifoScheduler) Dequeue(ctx context.Context) (*karta.TaskEnvelope, error
 				backoff = maxBackoff
 			}
 		}
-		// 安全重设：先 Stop+drain（处理所有分支），再 Reset
-		stopAndDrainTimer(timer)
+		// Go 1.23+ 保证 Reset 返回后不会收到旧定时值，直接重设即可
 		timer.Reset(backoff)
 	}
 }

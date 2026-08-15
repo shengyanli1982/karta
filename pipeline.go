@@ -17,15 +17,16 @@ type Pipeline[In, Out any] struct {
 	handler       Handler[In, Out]
 	scheduler     Scheduler
 	opts          *pipelineOptions
+	mws           []Middleware[In, Out] // NewPipeline 时一次性类型断言（类型不匹配 panic），此后只读
 	ctx           context.Context
 	cancel        context.CancelFunc
 	wg            sync.WaitGroup
 	once          sync.Once
 	closed        atomic.Bool
 	running       atomic.Int64
-	pendingMu     sync.Mutex                 // 与 pending 配合，替换 sync.Map
+	pendingMu     sync.Mutex                     // 保护 pending/closed/wg.Add 的共享临界区
 	pending       map[*TaskEnvelope]*Future[Out] // 替换 sync.Map，减少热路径分配
-	workerLimiter *rate.Limiter // worker spawn 速率控制
+	workerLimiter *rate.Limiter                  // worker spawn 速率控制
 }
 
 // NewPipeline 创建并启动一个 Pipeline
@@ -53,6 +54,7 @@ func NewPipeline[In, Out any](
 		handler:       handler,
 		scheduler:     scheduler,
 		opts:          o,
+		mws:           toMiddlewareSlice[In, Out](o.middleware),
 		ctx:           ctx,
 		cancel:        cancel,
 		pending:       make(map[*TaskEnvelope]*Future[Out]),
@@ -70,25 +72,35 @@ func NewPipeline[In, Out any](
 	return p
 }
 
-// Submit 提交任务，使用默认 handler，返回 Future
+// Submit 提交任务，使用默认 handler，返回 Future。
+// envelope 不携带 per-task Handler（保持 nil），executor 使用启动时
+// 已预包裹 middleware 的 defaultHandler，避免每任务重复 Chain 包裹。
 func (p *Pipeline[In, Out]) Submit(ctx context.Context, input In) (*Future[Out], error) {
-	return p.submitInternal(ctx, p.handler, input, 0)
+	return p.submitInternal(ctx, nil, input, 0)
 }
 
-// SubmitWithHandler 提交任务，使用指定的 handler 覆盖默认 handler
+// SubmitWithHandler 提交任务，使用指定的 handler 覆盖默认 handler。
+// 这是唯一设置 envelope.Handler 的提交路径；handler 为 nil 时等同于
+// 使用默认 handler（见 TaskEnvelope.Handler 的 nil 语义）。
 func (p *Pipeline[In, Out]) SubmitWithHandler(ctx context.Context, handler Handler[In, Out], input In) (*Future[Out], error) {
 	return p.submitInternal(ctx, handler, input, 0)
 }
 
-// SubmitAfter 延迟提交任务，delay 后入队
+// SubmitAfter 延迟提交任务，delay 后入队。
+// 与 Submit 相同，envelope 不携带 per-task Handler。
 func (p *Pipeline[In, Out]) SubmitAfter(ctx context.Context, input In, delay time.Duration) (*Future[Out], error) {
-	return p.submitInternal(ctx, p.handler, input, delay)
+	return p.submitInternal(ctx, nil, input, delay)
 }
 
 // Stop 关闭 pipeline，幂等操作
 func (p *Pipeline[In, Out]) Stop() {
 	p.once.Do(func() {
+		// closed 必须在 pendingMu 临界区内设置：Submit/trySpawnWorker 在
+		// 同一把锁下完成 closed 检查与 wg.Add，保证 wg.Wait 开始后
+		// 不会再有新的 wg.Add（杜绝 WaitGroup misuse）
+		p.pendingMu.Lock()
 		p.closed.Store(true)
+		p.pendingMu.Unlock()
 		p.cancel()
 		p.scheduler.Shutdown()
 		p.wg.Wait()
@@ -108,49 +120,63 @@ func (p *Pipeline[In, Out]) GetWorkerNumber() int64 {
 }
 
 // submitInternal 统一的提交入口
+//
+// handler 为 nil 表示不携带 per-task 覆盖（envelope.Handler 保持 nil），
+// executor 将使用启动时预包裹 middleware 的 defaultHandler；
+// 仅 SubmitWithHandler 传入非 nil handler 设置 per-task 覆盖。
+//
+// 并发安全不变量：closed 检查、pending 写入、wg.Add(1) 三者必须在同一个
+// pendingMu 临界区内完成（与 Stop 中同一把锁下设置 closed 配合），
+// 保证 Stop 的 wg.Wait 开始后不会再出现新的 wg.Add。
 func (p *Pipeline[In, Out]) submitInternal(
 	ctx context.Context,
 	handler Handler[In, Out],
 	input In,
 	delay time.Duration,
 ) (*Future[Out], error) {
-	if p.closed.Load() {
-		return nil, ErrPipelineClosed
-	}
-
 	future := NewPendingFuture[Out]()
 	envelope := getEnvelope()
 	envelope.Input = input
-	envelope.Handler = handler
-	envelope.Delay = delay
-	envelope.CreatedAt = time.Now()
+	// handler 为 nil 时不得赋值 envelope.Handler：Handler 是函数类型，
+	// typed nil 赋给 any 字段会得到非 nil 的 interface 值，executor 将误判为
+	// per-task 覆盖并调用 nil 函数（panic）。池化 envelope 的 Handler 已被
+	// putEnvelope 清零，保持 nil 即走默认 handler 路径。
+	if handler != nil {
+		envelope.Handler = handler
+	}
 	envelope.UserCtx = ctx
+	envelope.CreatedAt = time.Now()
 
 	if delay > 0 {
 		// 延迟提交：goroutine 等待 timer 触发后入队
-		// wg.Add 在 closed 检查之前，确保 Stop 的 wg.Wait 能等待此 goroutine，
-		// 从而 pending 清理能覆盖所有 delayed future
-		p.wg.Add(1)
+		envelope.Delay = delay
+		p.pendingMu.Lock()
 		if p.closed.Load() {
-			p.wg.Done()
+			p.pendingMu.Unlock()
 			putEnvelope(envelope)
 			return nil, ErrPipelineClosed
 		}
+		p.wg.Add(1)
+		p.pendingMu.Unlock()
 		go func() {
 			defer p.wg.Done()
 			timer := time.NewTimer(delay)
 			defer timer.Stop()
 			select {
 			case <-timer.C:
-				// timer 触发时再次检查 closed，缩小与 Stop 的竞态窗口：
-				// 若 pipeline 已关闭，直接 resolve future，不存入 pending
+				// 延迟等待已由本 goroutine 完成，入队前清零 Delay，
+				// 防止 Delay-aware 调度器（如 scheduler 包的 delay/timer）二次施加延迟
+				envelope.Delay = 0
+				// timer 触发时再次检查 closed：若 pipeline 已关闭，
+				// 直接 resolve future，不存入 pending
+				p.pendingMu.Lock()
 				if p.closed.Load() {
+					p.pendingMu.Unlock()
 					future.Resolve(Result[Out]{Err: ErrPipelineClosed})
 					putEnvelope(envelope)
 					return
 				}
 				// 先存 pending 再入队，避免 executor 取走时找不到 future
-				p.pendingMu.Lock()
 				p.pending[envelope] = future
 				p.pendingMu.Unlock()
 				err := p.scheduler.Enqueue(envelope)
@@ -160,7 +186,9 @@ func (p *Pipeline[In, Out]) submitInternal(
 					p.pendingMu.Unlock()
 					future.Resolve(Result[Out]{Err: err})
 					putEnvelope(envelope)
+					return
 				}
+				p.trySpawnWorker() // 与即时路径对称：按需启动新 worker
 			case <-p.ctx.Done():
 				future.Resolve(Result[Out]{Err: p.ctx.Err()})
 				putEnvelope(envelope)
@@ -172,8 +200,14 @@ func (p *Pipeline[In, Out]) submitInternal(
 		return future, nil
 	}
 
-	// 即时提交：先存 pending 再入队，避免 executor 取走时找不到 future
+	// 即时提交：closed 检查与 pending 写入同处一个临界区，
+	// 先存 pending 再入队，避免 executor 取走时找不到 future
 	p.pendingMu.Lock()
+	if p.closed.Load() {
+		p.pendingMu.Unlock()
+		putEnvelope(envelope)
+		return nil, ErrPipelineClosed
+	}
 	p.pending[envelope] = future
 	p.pendingMu.Unlock()
 	err := p.scheduler.Enqueue(envelope)
@@ -190,6 +224,9 @@ func (p *Pipeline[In, Out]) submitInternal(
 
 // executor 是 worker goroutine，从 scheduler 取任务并执行
 // 支持 idle timeout 自动退出（保留至少 1 个 worker）
+//
+// running 记账：started != nil 时（NewPipeline 启动）由本函数登记名额；
+// started == nil 时（trySpawnWorker 启动）名额已在调用方 CAS 中预留，此处不再 Add
 func (p *Pipeline[In, Out]) executor(started chan<- struct{}) {
 	idleExit := false
 	defer func() {
@@ -198,22 +235,20 @@ func (p *Pipeline[In, Out]) executor(started chan<- struct{}) {
 		}
 		p.wg.Done()
 	}()
-	p.running.Add(1)
 	if started != nil {
+		p.running.Add(1)
 		close(started) // 通知调用方 executor 已就绪
 	}
 
 	lastActive := time.Now().UnixMilli()
 
-	// middleware pre-wrap: 类型断言 + Chain 包裹只执行一次（per executor，避免共享写竞争）
+	// middleware pre-wrap: Chain 包裹只执行一次（per executor，避免共享写竞争）
+	// p.mws 在 NewPipeline 时一次性完成类型断言（类型不匹配 panic），此后只读；
 	// 读取 p.handler 是安全的（NewPipeline 返回后不再写入），但不可写回 p.handler
 	defaultHandler := p.handler
-	var mws []Middleware[In, Out]
-	if len(p.opts.middleware) > 0 {
-		mws = toMiddlewareSlice[In, Out](p.opts.middleware)
-		if len(mws) > 0 {
-			defaultHandler = Chain(mws...)(p.handler)
-		}
+	mws := p.mws
+	if len(mws) > 0 {
+		defaultHandler = Chain(mws...)(p.handler)
 	}
 
 	// Hot Path 1: 在循环外创建可复用的 timer，避免每轮 context.WithTimeout 分配
@@ -225,13 +260,8 @@ func (p *Pipeline[In, Out]) executor(started chan<- struct{}) {
 	ss, _ := p.scheduler.(*SimpleScheduler)
 
 	for {
-		// 正确 Reset timer：先 Stop + drain，再 Reset
-		if !scanTimer.Stop() {
-			select {
-			case <-scanTimer.C:
-			default:
-			}
-		}
+		// Go 1.23+：Reset 保证调用后不会收到此前未取走的过期 tick，
+		// 无需 Stop + drain 样板
 		scanTimer.Reset(p.opts.scanInterval)
 
 		var envelope *TaskEnvelope
@@ -291,7 +321,19 @@ func (p *Pipeline[In, Out]) executor(started chan<- struct{}) {
 
 		future := p.loadAndDeletePending(envelope)
 		if future == nil {
-			// future 已被取消/超时清理，仍需 Done 释放租约/死信标记
+			// future 已被取消/超时清理（lease 重投递或 Stop 清理场景），
+			// 仍需 Done 释放租约/死信标记。
+			// 归还不变量：envelope 恰好归还一次，且归还原持有者执行——
+			// 原持有 executor（或提交路径）完成时 putEnvelope；此处若再归还，
+			// 将与原持有者的归还形成双重归还，污染池中其他任务。故只 Done，不 putEnvelope。
+			p.scheduler.Done(envelope)
+			continue
+		}
+
+		// UserCtx 已取消的任务直接以取消错误完成，不执行 handler，
+		// 完成路径（Resolve → Done → 归还 envelope）与其他路径保持一致
+		if envelope.UserCtx != nil && envelope.UserCtx.Err() != nil {
+			future.Resolve(Result[Out]{Err: envelope.UserCtx.Err()})
 			p.scheduler.Done(envelope)
 			putEnvelope(envelope)
 			continue
@@ -309,10 +351,10 @@ func (p *Pipeline[In, Out]) executor(started chan<- struct{}) {
 		}
 
 		// Hot Path 2 v2: 仅在 UserCtx 有可观察取消信号时才创建 cancel context
-		// 三条快速路径 (0 extra allocs)：
+		// （UserCtx 已取消的任务已在上方短路，不会执行到此处）
+		// 两条快速路径 (0 extra allocs)：
 		//   1. UserCtx == nil：无调用方 context
 		//   2. UserCtx.Done() == nil：context.Background()/TODO()，永不取消
-		//   3. UserCtx.Err() != nil：已取消，AfterFunc 会立刻 fire 但 handler 已在 p.ctx 下运行
 		var taskCtx context.Context
 		var taskCancel context.CancelFunc
 		var stopAfterFunc func() bool
@@ -369,16 +411,33 @@ func (p *Pipeline[In, Out]) loadAndDeletePending(envelope *TaskEnvelope) *Future
 
 // trySpawnWorker 尝试在 worker 数量未达上限时启动新 worker
 // 受 rate.Limiter 控制，避免瞬间 spawn 过多 worker
+//
+// CAS 循环先预留 running 名额再 spawn，杜绝 check-then-spawn 的
+// TOCTOU 窗口（并发提交时可能超出 workers 上限）；closed 检查与
+// wg.Add 同处 pendingMu 临界区，与 Stop 的 wg.Wait 互斥
 func (p *Pipeline[In, Out]) trySpawnWorker() {
-	if p.running.Load() >= int64(p.opts.workers) {
+	// 预留名额：超过上限则不 spawn
+	for {
+		cur := p.running.Load()
+		if cur >= int64(p.opts.workers) {
+			return
+		}
+		if p.running.CompareAndSwap(cur, cur+1) {
+			break
+		}
+	}
+	// 名额不足（限流）：归还预留名额
+	if !p.workerLimiter.Allow() {
+		p.running.Add(-1)
 		return
 	}
-	if !p.workerLimiter.Allow() {
+	p.pendingMu.Lock()
+	if p.closed.Load() {
+		p.pendingMu.Unlock()
+		p.running.Add(-1)
 		return
 	}
 	p.wg.Add(1)
-	started := make(chan struct{})
-	go p.executor(started)
-	<-started
+	p.pendingMu.Unlock()
+	go p.executor(nil)
 }
-

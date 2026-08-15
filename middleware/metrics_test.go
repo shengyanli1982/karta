@@ -223,3 +223,96 @@ func TestMetrics_WithLabels(t *testing.T) {
 		}
 	}
 }
+
+// TestMetrics_ReuseRegisteredCollectors 同一 Registry 上构建两个相同配置的中间件时，
+// 第二个实例复用已注册的 collector，两个中间件的指标在同一实例上正确累加
+func TestMetrics_ReuseRegisteredCollectors(t *testing.T) {
+	reg := prometheus.NewRegistry()
+
+	mw1 := Metrics[int, int](WithRegisterer(reg), WithNamespace("test"), WithSubsystem("reuse"))
+	mw2 := Metrics[int, int](WithRegisterer(reg), WithNamespace("test"), WithSubsystem("reuse"))
+
+	h1 := mw1(func(ctx context.Context, input int) (int, error) {
+		return input, nil
+	})
+	h2 := mw2(func(ctx context.Context, input int) (int, error) {
+		if input < 0 {
+			return 0, errors.New("negative input")
+		}
+		return input, nil
+	})
+
+	// h1: 2 次成功; h2: 1 次成功 + 1 次失败
+	for i := 0; i < 2; i++ {
+		_, err := h1(context.Background(), i)
+		require.NoError(t, err)
+	}
+	_, err := h2(context.Background(), 1)
+	require.NoError(t, err)
+	_, err = h2(context.Background(), -1)
+	require.Error(t, err)
+
+	// histogram 样本数 = 4；若第二个中间件持有未注册的 collector，Gather 只能看到 2
+	count, _ := findMetricFamily(t, reg, "test_reuse_execution_duration_seconds")
+	assert.Equal(t, uint64(4), count, "两个中间件应共享同一个 histogram")
+
+	// total 计数累加: success=3, error=1
+	assert.Equal(t, float64(3), getCounterVecValue(t, reg, "test_reuse_total", "success"))
+	assert.Equal(t, float64(1), getCounterVecValue(t, reg, "test_reuse_total", "error"))
+
+	// errors_total = 1
+	_, errVal := findMetricFamily(t, reg, "test_reuse_errors_total")
+	assert.Equal(t, float64(1), errVal)
+}
+
+// failingRegisterer 模拟注册时返回非 AlreadyRegisteredError 错误的注册器
+type failingRegisterer struct {
+	err error
+}
+
+func (r failingRegisterer) Register(prometheus.Collector) error { return r.err }
+
+func (r failingRegisterer) MustRegister(...prometheus.Collector) { panic(r.err) }
+
+func (r failingRegisterer) Unregister(prometheus.Collector) bool { return false }
+
+// TestMetrics_PanicsOnRegisterError 非 AlreadyRegisteredError 的注册错误应 panic（fail-fast）
+func TestMetrics_PanicsOnRegisterError(t *testing.T) {
+	reg := failingRegisterer{err: errors.New("registry unavailable")}
+
+	defer func() {
+		rec := recover()
+		require.NotNil(t, rec, "注册失败时应 panic")
+		msg, ok := rec.(string)
+		require.True(t, ok, "panic 值应为带说明的字符串")
+		assert.Contains(t, msg, "karta middleware")
+		assert.Contains(t, msg, "registry unavailable")
+	}()
+
+	_ = Metrics[int, int](WithRegisterer(reg), WithNamespace("test"), WithSubsystem("fail"))
+}
+
+// TestMetrics_PanicsOnCollectorTypeMismatch 同名但不同类型的 collector 已注册时，
+// 复用失败应 panic（fail-fast），而不是静默丢失指标
+func TestMetrics_PanicsOnCollectorTypeMismatch(t *testing.T) {
+	reg := prometheus.NewRegistry()
+	// 与 histogram 同名同 help 的 counter 抢占注册（help 必须一致，
+	// 否则 Registry 的一致性检查会先于去重检查返回普通错误）
+	conflict := prometheus.NewCounter(prometheus.CounterOpts{
+		Namespace: "test",
+		Subsystem: "mis",
+		Name:      "execution_duration_seconds",
+		Help:      "Handler execution duration in seconds",
+	})
+	require.NoError(t, reg.Register(conflict))
+
+	defer func() {
+		rec := recover()
+		require.NotNil(t, rec, "类型不匹配时应 panic")
+		msg, ok := rec.(string)
+		require.True(t, ok, "panic 值应为带说明的字符串")
+		assert.Contains(t, msg, "type mismatch")
+	}()
+
+	_ = Metrics[int, int](WithRegisterer(reg), WithNamespace("test"), WithSubsystem("mis"))
+}
