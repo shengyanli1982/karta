@@ -25,7 +25,7 @@ The library offers two core components:
 - **11 Scheduler implementations** — SimpleScheduler (built-in) + FIFO, Delay, Priority, RateLimiting, Timer, Bounded, Retry, DLQ, Lease, Composite
 - **LifecycleManager** — signal-aware graceful shutdown with per-component timeout
 - **v1compat package** — backward-compatible wrappers for incremental migration from karta v1
-- **Minimal dependencies** — core uses only `gs` (lifecycle) and `golang.org/x/time/rate` (rate limiting); middleware adds optional Prometheus and OpenTelemetry support
+- **Minimal dependencies** — core uses only `golang.org/x/time/rate` (rate limiting); middleware adds optional Prometheus and OpenTelemetry support
 
 ## Installation
 
@@ -205,19 +205,21 @@ All schedulers implement the `Scheduler` interface and are available in the `sch
 import "github.com/shengyanli1982/karta/v2/scheduler"
 ```
 
-| Scheduler           | Constructor                                   | Description                                                  |
-| ------------------- | --------------------------------------------- | ------------------------------------------------------------ |
-| **SimpleScheduler** | `karta.NewSimpleScheduler(bufferSize)`        | Channel-based FIFO (built-in, no sub-package)                |
-| **FIFO**            | `scheduler.NewFIFOScheduler()`                | workqueue.Queue-based FIFO                                   |
-| **Delay**           | `scheduler.NewDelayScheduler()`               | Delayed task support via `TaskEnvelope.Delay`                |
-| **Priority**        | `scheduler.NewPriorityScheduler()`            | Priority queue (lower number = higher priority)              |
-| **RateLimiting**    | `scheduler.NewRateLimitingScheduler(limiter)` | Token-bucket rate-limited queue                              |
-| **Timer**           | `scheduler.NewTimerScheduler()`               | Absolute deadline + relative delay scheduling                |
-| **Bounded**         | `scheduler.NewBoundedScheduler(capacity)`     | Bounded blocking queue with back-pressure (may briefly block when full before returning ErrSchedulerFull) |
-| **Retry**           | `scheduler.NewRetryScheduler(policy)`         | Automatic retry with configurable policy                     |
-| **DLQ**             | `scheduler.NewDLQScheduler(maxRetries)`       | Dead-letter queue for failed tasks                           |
-| **Lease**           | `scheduler.NewLeaseScheduler(leaseTimeout)`   | Lease-based task ownership with auto-requeue                 |
-| **Composite**       | `scheduler.NewCompositeScheduler(scheds...)`  | Chains multiple schedulers (enqueue → first, dequeue → last) |
+| Scheduler           | Constructor                                   | Description                                                  | Pipeline integration |
+| ------------------- | --------------------------------------------- | ------------------------------------------------------------ | -------------------- |
+| **SimpleScheduler** | `karta.NewSimpleScheduler(bufferSize)`        | Channel-based FIFO (built-in, no sub-package)                | Full — FIFO by design |
+| **FIFO**            | `scheduler.NewFIFOScheduler()`                | workqueue.Queue-based FIFO                                   | Full |
+| **Delay**           | `scheduler.NewDelayScheduler()`               | Delayed task support via `TaskEnvelope.Delay`                | Degraded to FIFO — Pipeline never enqueues with `Delay` set (`SubmitAfter` waits client-side and clears it); drive the Scheduler API directly for scheduler-native delay |
+| **Priority**        | `scheduler.NewPriorityScheduler()`            | Priority queue (lower number = higher priority)              | Degraded to FIFO — Pipeline never sets `TaskEnvelope.Priority`; drive the Scheduler API directly to use priorities |
+| **RateLimiting**    | `scheduler.NewRateLimitingScheduler(limiter)` | Token-bucket rate-limited queue                              | Full — dequeue-side rate limiting, independent of envelope fields |
+| **Timer**           | `scheduler.NewTimerScheduler()`               | Absolute deadline + relative delay scheduling                | Degraded to FIFO — Pipeline never sets `TaskEnvelope.Deadline`/`Delay`; drive the Scheduler API directly |
+| **Bounded**         | `scheduler.NewBoundedScheduler(capacity)`     | Bounded blocking queue with back-pressure (may briefly block when full before returning ErrSchedulerFull) | Full — enqueue-side capacity check |
+| **Retry**           | `scheduler.NewRetryScheduler(policy)`         | Automatic retry with configurable policy                     | Degraded to FIFO — automatic requeue requires calling `Retry(task, reason)` (not part of the `Scheduler` interface), which the Pipeline executor never does; use `middleware.Retry` for Pipeline workloads |
+| **DLQ**             | `scheduler.NewDLQScheduler(maxRetries)`       | Dead-letter queue for failed tasks                           | Degraded to FIFO — `maxRetries` is metadata only; dead-letter routing requires driving the Scheduler API directly |
+| **Lease**           | `scheduler.NewLeaseScheduler(leaseTimeout)`   | Lease-based task ownership with auto-requeue                 | At-least-once delivery semantics — `Dequeue` grants a lease, `Done` acks it; unacked tasks are automatically requeued after the lease timeout |
+| **Composite**       | `scheduler.NewCompositeScheduler(scheds...)`  | Chains multiple schedulers (enqueue → first, dequeue → last) | Depends on the chained schedulers |
+
+> **Note on Pipeline integration**: `Pipeline.Submit` / `SubmitAfter` / `SubmitWithHandler` never populate `TaskEnvelope.Priority`, `Delay`, or `Deadline` (`SubmitAfter` implements the delay client-side and clears `Delay` before enqueuing), and the Pipeline executor never calls scheduler-specific extras such as `Retry`. Schedulers whose behavior depends on those fields therefore behave as FIFO when driven through a Pipeline — drive the `Scheduler` API directly (or use `middleware.Retry` / `SubmitAfter`) to get their native semantics.
 
 ## Middleware
 
@@ -235,7 +237,7 @@ import "github.com/shengyanli1982/karta/v2/middleware"
 | **RateLimit** | `RateLimit[In, Out](limiter *rate.Limiter)` | Token-bucket rate limiting via `golang.org/x/time/rate`       |
 | **Retry**     | `Retry[In, Out](opts ...RetryOption)`       | Retries on failure with configurable attempts/delay/condition |
 | **Metrics**   | `Metrics[In, Out](opts ...MetricsOption)`   | Prometheus histogram + counter instrumentation                |
-| **Tracing**   | `Tracing[In, Out any](tracer trace.Tracer, opts ...TracingOption)` | OpenTelemetry span creation with input/output attributes |
+| **Tracing**   | `Tracing[In, Out any](tracer trace.Tracer, opts ...TracingOption)` | OpenTelemetry span creation with error status recording (input/output values are not recorded) |
 
 Middleware is combined using `karta.Chain`:
 
@@ -274,22 +276,26 @@ Karta is optimized for high-throughput workloads with minimal allocation overhea
 
 | Benchmark                                     | ns/op  | B/op  | allocs/op |
 | --------------------------------------------- | ------ | ----- | --------- |
-| `GroupMap` (100 items)                        | ~639   | 2688  | 1         |
-| `GroupMap_Parallel` (100 items)               | ~455   | 2688  | 1         |
-| `GroupMap_LargeBatch` (1000 items, 8 workers) | ~39100 | 24927 | 9         |
-| `PipelineSubmit`                              | ~1400  | 205   | 3         |
-| `PipelineSubmit_Parallel`                     | ~1900  | 207   | 3         |
-| `FutureGet` (resolved)                        | ~31    | 80    | 1         |
-| `FutureResolve`                               | ~45    | 80    | 1         |
-| `FutureThen`                                  | ~1190  | 295   | 5         |
-| `MiddlewareChain` (3 MW)                      | ~1.35  | 0     | 0         |
-| `SimpleScheduler`                             | ~114   | 0     | 0         |
+| `GroupMap` (100 items)                        | ~635   | 2688  | 1         |
+| `GroupMap_Parallel` (100 items)               | ~464   | 2688  | 1         |
+| `GroupMap_LargeBatch` (1000 items, 8 workers) | ~12340 | 25039 | 9         |
+| `PipelineSubmit`                              | ~1483  | 205   | 3         |
+| `PipelineSubmit_Parallel`                     | ~1519  | 207   | 3         |
+| `FutureGet` (resolved)                        | ~30    | 80    | 1         |
+| `FutureResolve`                               | ~46    | 80    | 1         |
+| `FutureThen`                                  | ~243   | 48    | 1         |
+| `MiddlewareChain` (3 MW)                      | ~1.36  | 0     | 0         |
+| `SimpleScheduler`                             | ~103   | 0     | 0         |
+
+<sub>Note: `FutureThen` measures the `Then` fast path on an already-resolved future; `PipelineSubmit_Parallel` has inherent high variance (±20%).</sub>
 
 Key optimizations:
 - **Sequential fast path**: `Group.Map` bypasses goroutine scheduling for small batches (<128 items), achieving single-digit microsecond latencies.
 - **Lazy channel allocation**: `Future` only allocates a `done` channel when a `Get` caller actually blocks, saving allocations on resolved futures.
 - **sync.Pool reuse**: `TaskEnvelope` and pipeline work contexts are pooled, reducing per-task allocations.
 - **Hybrid wait for large batches**: `Group.Map`'s large-batch parallel path combines bounded spinning with blocking waits to balance tail latency against CPU overhead.
+- **Chunked claim for large batches**: `Group.Map`'s parallel path has workers claim indices in chunks (`chunk = clamp(n/(workers×4), 1, 64)`), eliminating cache-line contention from per-item atomic claims and cutting 1000-item batch latency by ~65%.
+- **Blocking dequeue**: `scheduler` sub-package adapters consume tasks via workqueue v2.3.4's native blocking `GetWithContext` instead of polling with exponential backoff, eliminating dequeue latency and idle CPU spin (significant measured drops on FIFO/Lease dequeue paths).
 
 Run `go test -bench=. -benchmem ./...` to verify on your hardware.
 

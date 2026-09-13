@@ -280,3 +280,108 @@ func TestGroup_Map_ConcurrentLargeBatch_Race(t *testing.T) {
 	}
 	wg.Wait()
 }
+
+// TestClaimChunk — 批量认领大小计算的钳制边界：
+// clamp(n/(workers*claimFactor), 1, claimCap)
+func TestClaimChunk(t *testing.T) {
+	cases := []struct {
+		name    string
+		n       int
+		workers int
+		want    int
+	}{
+		{"下界钳制到1", 8, 4, 1},             // 8/16=0 → 1
+		{"整除中间值", 512, 4, 32},           // 512/16=32
+		{"上界钳制到cap", 4096, 4, claimCap}, // 4096/16=256 → 64
+		{"恰好等于cap", 1024, 4, claimCap},  // 1024/16=64
+		{"cap差1", 1020, 4, 63},          // 1020/16=63
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, claimChunk(tc.n, tc.workers))
+		})
+	}
+}
+
+// TestGroup_Map_ConcurrentPath_ChunkBoundary — chunked claim 认领边界回归：
+// n 恰为 chunk 整数倍 / 余 1 / 尾部余数小于 chunk 的组合（均 > seqThreshold=128
+// 强制并发路径），逐位断言结果完整有序，杜绝「已认领未处理」空洞与越界错写。
+func TestGroup_Map_ConcurrentPath_ChunkBoundary(t *testing.T) {
+	cases := []struct {
+		name    string
+		n       int
+		workers int
+		wantMod int // 期望的 n % chunk（-1 表示不校验）
+	}{
+		{"w2_n129_余1", 129, 2, 1},             // chunk=16, 129=8×16+1
+		{"w2_n130_尾部余2", 130, 2, 2},           // chunk=16, 130=8×16+2
+		{"w2_n1000_cap钳制尾部余40", 1000, 2, 40},  // chunk=64(125→cap), 1000=15×64+40
+		{"w4_n129_余1", 129, 4, 1},             // chunk=8, 129=16×8+1
+		{"w4_n512_整数倍", 512, 4, 0},            // chunk=32, 512=16×32
+		{"w4_n1024_cap整数倍", 1024, 4, 0},       // chunk=64(cap), 1024=16×64
+		{"w8_n1000_LargeBatch形状", 1000, 8, 8}, // chunk=31, 1000=32×31+8
+		{"w8_n2049_cap余1", 2049, 8, 1},        // chunk=64(cap), 2049=32×64+1
+		{"w8_n4096_cap整数倍", 4096, 8, 0},       // chunk=128→64(cap), 4096=64×64
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			chunk := claimChunk(tc.n, tc.workers)
+			require.Positive(t, chunk)
+			require.LessOrEqual(t, chunk, claimCap)
+			if tc.wantMod >= 0 {
+				require.Equal(t, tc.wantMod, tc.n%chunk, "用例应命中预期认领边界")
+			}
+
+			g := NewGroup[int, int](func(ctx context.Context, v int) (int, error) {
+				return v*2 + 7, nil
+			}, WithGroupWorkers(tc.workers))
+			defer g.Stop()
+
+			inputs := make([]int, tc.n)
+			for i := range inputs {
+				inputs[i] = i
+			}
+			results := g.Map(context.Background(), inputs)
+			require.Len(t, results, tc.n)
+			for i, r := range results {
+				require.NoError(t, r.Err, "index %d 应成功（无认领空洞）", i)
+				require.Equal(t, i*2+7, r.Value, "index %d 结果应按输入顺序确定", i)
+			}
+		})
+	}
+}
+
+// TestGroup_Map_ConcurrentPath_ChunkBoundary_PartialPanic — chunk 认领与
+// per-item recover 的交互：panic 项之后同一认领区间内的项必须仍被处理，
+// 每个输入恰好产生一个 Result（panic 项 Err，其余正确值）。
+func TestGroup_Map_ConcurrentPath_ChunkBoundary_PartialPanic(t *testing.T) {
+	const (
+		n       = 1000 // chunk=62 (1000/16)，panic 项散布在多个 chunk 内部
+		workers = 4
+	)
+	require.Greater(t, claimChunk(n, workers), 1, "用例必须走批量认领（chunk>1）")
+
+	g := NewGroup[int, int](func(ctx context.Context, v int) (int, error) {
+		if v%23 == 0 {
+			panic(fmt.Sprintf("boom-%d", v))
+		}
+		return v * 3, nil
+	}, WithGroupWorkers(workers))
+	defer g.Stop()
+
+	inputs := make([]int, n)
+	for i := range inputs {
+		inputs[i] = i
+	}
+	results := g.Map(context.Background(), inputs)
+	require.Len(t, results, n)
+	for i, r := range results {
+		if i%23 == 0 {
+			require.Error(t, r.Err, "index %d 应为 panic 失败", i)
+			assert.Contains(t, r.Err.Error(), "handler panic")
+		} else {
+			require.NoError(t, r.Err, "index %d 应成功（同 chunk 内 panic 不得留下空洞）", i)
+			require.Equal(t, i*3, r.Value, "index %d", i)
+		}
+	}
+}

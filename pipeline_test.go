@@ -405,9 +405,14 @@ func TestPipeline_SubmitAfter_ShortDelayFlow(t *testing.T) {
 
 // TestPipeline_SubmitAfter_DelayAndStop_MultiRound — 多轮 timer+Stop 竞速
 // 每轮 timer 可能先于 Stop 触发（覆盖 case <-timer.C + closed check）
-// 也可能 Stop 先触发（覆盖 case <-p.ctx.Done()或 pending.Range 清理）
+// 也可能 Stop 先触发（覆盖 case <-p.ctx.Done()或 pending 清理）
+//
+// C5 语义统一后：Stop 触发的全部错误路径（timer 分支 closed 检查、
+// p.ctx.Done() 分支、Stop 的 pending 清理）均满足 errors.Is(ErrPipelineClosed)，
+// context.Canceled 不得再出现；并发 Shutdown 竞态下 Enqueue 失败则包
+// ErrSchedulerClosed（同为 SubmitError）。
 func TestPipeline_SubmitAfter_DelayAndStop_MultiRound(t *testing.T) {
-	var gotTimerPath, gotPipelineCtxPath, gotClosedPath int
+	var gotTimerPath, gotClosedPath, gotSchedulerClosedPath int
 	for round := 0; round < 50; round++ {
 		sched := NewSimpleScheduler(256)
 		handler := func(ctx context.Context, n int) (int, error) {
@@ -433,16 +438,22 @@ func TestPipeline_SubmitAfter_DelayAndStop_MultiRound(t *testing.T) {
 		cancel()
 		if result.Err == nil {
 			gotTimerPath++
-		} else if errors.Is(result.Err, context.Canceled) {
-			gotPipelineCtxPath++
 		} else if errors.Is(result.Err, ErrPipelineClosed) {
+			// 含裸 ErrPipelineClosed（timer 分支 closed 检查 / pending 清理）
+			// 与 SubmitError{ErrPipelineClosed}（p.ctx.Done() 分支，C5）
 			gotClosedPath++
+		} else if errors.Is(result.Err, ErrSchedulerClosed) {
+			// timer 触发与 Shutdown 竞态：Enqueue 失败包 SubmitError（C4）
+			gotSchedulerClosedPath++
+		} else {
+			// C5 回归护栏：context.Canceled 等分裂语义不得再出现
+			t.Fatalf("round %d: unexpected error semantics: %v", round, result.Err)
 		}
 	}
-	assert.Greater(t, gotPipelineCtxPath+gotTimerPath+gotClosedPath, 0,
+	assert.Greater(t, gotTimerPath+gotClosedPath+gotSchedulerClosedPath, 0,
 		"at least one path triggered")
-	t.Logf("timerPath=%d pipelineCtxPath=%d closedPath=%d",
-		gotTimerPath, gotPipelineCtxPath, gotClosedPath)
+	t.Logf("timerPath=%d closedPath=%d schedulerClosedPath=%d",
+		gotTimerPath, gotClosedPath, gotSchedulerClosedPath)
 }
 
 // TestPipeline_SubmitAfter_ConcurrentCancelAndTimer — 延迟任务并发取消，
@@ -823,7 +834,8 @@ func TestPipeline_LoadAndDeletePending_NotFound(t *testing.T) {
 	require.NotNil(t, p)
 	defer p.Stop()
 
-	// Synthetic envelope（不在 pending map 中）
+	// Synthetic envelope（id=0，不在 pending map 中：submitInternal 赋值的
+	// id 自增起点为 1，池化清零值 0 永远不会成为 pending 键）
 	synthetic := &TaskEnvelope{Input: 42}
 	got := p.loadAndDeletePending(synthetic)
 	assert.Nil(t, got, "should return nil when envelope not in pending")
@@ -840,11 +852,12 @@ func TestPipeline_LoadAndDeletePending_Found(t *testing.T) {
 	require.NotNil(t, p)
 	defer p.Stop()
 
-	// 手动添加 entry 到 pending map
+	// 手动添加 entry 到 pending map（id 键控，与 submitInternal 一致）
 	envelope := &TaskEnvelope{Input: 99}
+	envelope.id = newEnvelopeID()
 	future := NewPendingFuture[int]()
 	p.pendingMu.Lock()
-	p.pending[envelope] = future
+	p.pending[envelope.id] = future
 	p.pendingMu.Unlock()
 
 	// 应能找到 future
@@ -983,4 +996,155 @@ func TestPipeline_SubmitStop_Stress(t *testing.T) {
 		close(stopCh)
 		subWG.Wait()
 	}
+}
+
+// ---------------------------------------------------------------------------
+// 批次 C 缺陷修复回归测试（C1/C4/C5）
+// ---------------------------------------------------------------------------
+
+// fastFailScheduler 是 Dequeue 持续立即返错（忽略 ctx）的 Scheduler 实现，
+// 用于触发 executor fallback 错误路径（C1 忙自旋回归场景）。
+type fastFailScheduler struct {
+	closed   atomic.Bool
+	dequeues atomic.Int64
+}
+
+var _ Scheduler = (*fastFailScheduler)(nil)
+
+func (s *fastFailScheduler) Enqueue(*TaskEnvelope) error { return nil }
+
+func (s *fastFailScheduler) Dequeue(context.Context) (*TaskEnvelope, error) {
+	s.dequeues.Add(1)
+	return nil, errors.New("karta test: fast fail")
+}
+
+func (s *fastFailScheduler) Done(*TaskEnvelope) {}
+
+func (s *fastFailScheduler) Len() int { return 0 }
+
+func (s *fastFailScheduler) Shutdown() { s.closed.Store(true) }
+
+func (s *fastFailScheduler) IsClosed() bool { return s.closed.Load() }
+
+// TestPipeline_ExecutorErrorPath_PacedNoBusySpin — C1 回归：Dequeue 持续
+// 快速返错（非 ctx 取消、非 scheduler 关闭）时，executor 不得零退避紧循环
+// 重试（修复前实证 500ms 内 114 万次调用、单核 100%）。修复后错误路径等待
+// scanTimer 到期（复用 scanInterval 节奏），500ms 内调用次数应受控；
+// 且 Stop 必须及时返回（pacing select 监听 p.ctx.Done()，cancel 立即唤醒）。
+func TestPipeline_ExecutorErrorPath_PacedNoBusySpin(t *testing.T) {
+	sched := &fastFailScheduler{}
+	handler := func(ctx context.Context, n int) (int, error) { return n, nil }
+	p := NewPipeline[int, int](handler, sched,
+		WithPipelineWorkers(2),
+		WithScanInterval(10*time.Millisecond),
+	)
+	require.NotNil(t, p)
+
+	time.Sleep(500 * time.Millisecond)
+	n := sched.dequeues.Load()
+	t.Logf("Dequeue calls in 500ms: %d", n)
+	// workers=2、scanInterval=10ms：理论节奏 ≈ 2×(500/10+2) ≈ 104 次；
+	// 修复前为数十万~百万级。取 1000 作宽松上界，避免定时器抖动误报。
+	assert.Less(t, n, int64(1000),
+		"error path must be paced by scanInterval, not busy-spinning")
+	assert.GreaterOrEqual(t, n, int64(2),
+		"每个 worker 至少应调用过一次 Dequeue（executor 存活）")
+
+	// Stop 必须及时返回：pacing 的 select 监听 p.ctx.Done()，
+	// Stop 的 cancel() 会立即唤醒等待中的 executor
+	stopDone := make(chan struct{})
+	go func() {
+		p.Stop()
+		close(stopDone)
+	}()
+	select {
+	case <-stopDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Stop did not return in time (pacing blocked shutdown)")
+	}
+}
+
+// enqueueFailScheduler 是 Enqueue 恒定失败的 Scheduler 实现，
+// 用于确定性触发提交路径的 Enqueue 失败分支（C4）。
+// Dequeue 遵守 ctx，避免干扰 executor（走 fallback 阻塞等待）。
+type enqueueFailScheduler struct {
+	closed atomic.Bool
+	err    error
+}
+
+var _ Scheduler = (*enqueueFailScheduler)(nil)
+
+func (s *enqueueFailScheduler) Enqueue(*TaskEnvelope) error { return s.err }
+
+func (s *enqueueFailScheduler) Dequeue(ctx context.Context) (*TaskEnvelope, error) {
+	<-ctx.Done()
+	return nil, ctx.Err()
+}
+
+func (s *enqueueFailScheduler) Done(*TaskEnvelope) {}
+
+func (s *enqueueFailScheduler) Len() int { return 0 }
+
+func (s *enqueueFailScheduler) Shutdown() { s.closed.Store(true) }
+
+func (s *enqueueFailScheduler) IsClosed() bool { return s.closed.Load() }
+
+// TestPipeline_SubmitAfter_EnqueueFail_WrapsSubmitError — C4 回归：
+// 延迟路径 timer 触发后 Enqueue 失败，future 的错误必须与即时路径同构
+// （包 *SubmitError），保证 errors.As 判型的调用方在两条路径行为一致。
+func TestPipeline_SubmitAfter_EnqueueFail_WrapsSubmitError(t *testing.T) {
+	enqueueErr := errors.New("karta test: enqueue refused")
+	sched := &enqueueFailScheduler{err: enqueueErr}
+	handler := func(ctx context.Context, n int) (int, error) { return n, nil }
+	p := NewPipeline[int, int](handler, sched)
+	require.NotNil(t, p)
+	defer p.Stop()
+
+	// 即时路径对照：Submit 同步返回 *SubmitError
+	_, err := p.Submit(context.Background(), 1)
+	require.Error(t, err)
+	var immediateSE *SubmitError
+	assert.ErrorAs(t, err, &immediateSE, "即时路径应返回 *SubmitError")
+	assert.ErrorIs(t, err, enqueueErr)
+
+	// 延迟路径：timer 触发后 Enqueue 失败 → future resolve *SubmitError
+	f, err := p.SubmitAfter(context.Background(), 2, 20*time.Millisecond)
+	require.NoError(t, err)
+
+	getCtx, getCancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer getCancel()
+	result := f.Get(getCtx)
+	require.Error(t, result.Err)
+	var delayedSE *SubmitError
+	assert.ErrorAs(t, result.Err, &delayedSE,
+		"延迟路径 Enqueue 失败应包 *SubmitError（与即时路径同构）: %v", result.Err)
+	assert.ErrorIs(t, result.Err, enqueueErr, "SubmitError 应经 Unwrap 透传底层错误")
+}
+
+// TestPipeline_SubmitAfter_StopDuringDelay_ResolvesPipelineClosed — C5 回归：
+// 延迟等待期间 Stop（timer 未触发，future 尚未进入 pending map），延迟
+// goroutine 走 p.ctx.Done() 分支。修复前该分支 resolve context.Canceled，
+// 与 timer 分支的 ErrPipelineClosed 语义分裂；修复后统一为 ErrPipelineClosed
+// （包 *SubmitError，与 C4 延迟路径 Enqueue 失败同构）。
+func TestPipeline_SubmitAfter_StopDuringDelay_ResolvesPipelineClosed(t *testing.T) {
+	sched := NewSimpleScheduler(64)
+	handler := func(ctx context.Context, n int) (int, error) { return n, nil }
+	p := NewPipeline[int, int](handler, sched)
+	require.NotNil(t, p)
+
+	// 1 小时延迟：timer 在测试期间必然不触发，Stop 后唯一可达分支是 p.ctx.Done()
+	f, err := p.SubmitAfter(context.Background(), 1, time.Hour)
+	require.NoError(t, err)
+
+	p.Stop() // 内部 wg.Wait 等待延迟 goroutine resolve 完成后才返回
+
+	result := f.Get(context.Background())
+	require.Error(t, result.Err)
+	assert.ErrorIs(t, result.Err, ErrPipelineClosed,
+		"Stop 竞态下延迟任务应统一 resolve ErrPipelineClosed")
+	assert.NotErrorIs(t, result.Err, context.Canceled,
+		"修复前的 context.Canceled 语义不应再出现")
+	var submitErr *SubmitError
+	assert.ErrorAs(t, result.Err, &submitErr,
+		"应包 *SubmitError（与延迟路径 Enqueue 失败同构）")
 }

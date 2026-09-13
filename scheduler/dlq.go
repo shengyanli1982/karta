@@ -5,7 +5,6 @@ import (
 	"errors"
 	"sync"
 	"sync/atomic"
-	"time"
 
 	karta "github.com/shengyanli1982/karta/v2"
 	"github.com/shengyanli1982/workqueue/v2"
@@ -18,22 +17,26 @@ var _ karta.Scheduler = (*dlqScheduler)(nil)
 //
 // 入队时将 TaskEnvelope 包装为 DeadLetter；出队时从 DeadLetter 中提取原始任务。
 // maxRetries 记录死信最大重试次数，作为元数据存储但不影响调度行为。
+//
+// Dequeue 基于 BlockingGetQueue.GetWithContext 阻塞消费（委托内层队列，
+// 结果还原为 *DeadLetter，与 GetDead 一致）。
 type dlqScheduler struct {
-	queue      workqueue.DeadLetterQueue
+	queue workqueue.DeadLetterQueue
+	// blocking 构造时一次性断言。deadLetterQueueImpl.GetWithContext 返回的
+	// any 动态类型为 *workqueue.DeadLetter（非 *TaskEnvelope）。
+	blocking   workqueue.BlockingGetQueue
 	closed     atomic.Bool
 	pending    sync.Map // map[*karta.TaskEnvelope]*workqueue.DeadLetter
-	notify     chan struct{}
-	doneCh     chan struct{}
 	maxRetries int
 }
 
 // NewDLQScheduler 创建基于 workqueue.DeadLetterQueue 的死信调度器。
 // maxRetries 指定允许的最大重试次数（元数据，供外部参考）。
 func NewDLQScheduler(maxRetries int) karta.Scheduler {
+	q := workqueue.NewDeadLetterQueue(workqueue.NewDeadLetterQueueConfig())
 	return &dlqScheduler{
-		queue:      workqueue.NewDeadLetterQueue(workqueue.NewDeadLetterQueueConfig()),
-		notify:     make(chan struct{}, notifyChanCapacity()),
-		doneCh:     make(chan struct{}),
+		queue:      q,
+		blocking:   q.(workqueue.BlockingGetQueue),
 		maxRetries: maxRetries,
 	}
 }
@@ -58,46 +61,31 @@ func (s *dlqScheduler) Enqueue(task *karta.TaskEnvelope) error {
 		}
 		return err
 	}
-	select {
-	case s.notify <- struct{}{}:
-	default:
-	}
 	return nil
 }
 
+// Dequeue 阻塞获取任务：取到死信并解出 TaskEnvelope 返回；队列关闭返回
+// ErrSchedulerClosed（底层队列仅经 Shutdown 关闭，关闭前 closed 已置位）；
+// ctx 完成原样返回 ctx.Err()。
 func (s *dlqScheduler) Dequeue(ctx context.Context) (*karta.TaskEnvelope, error) {
-	backoff := minBackoff
-	timer := time.NewTimer(backoff)
-	defer timer.Stop()
-
 	for {
-		letter, err := s.queue.GetDead()
-		if err == nil && letter != nil {
-			if env, ok := letter.Payload.(*karta.TaskEnvelope); ok {
-				// 记录 DeadLetter → TaskEnvelope 映射，供 Done 使用
-				s.pending.Store(env, letter)
-				return env, nil
+		val, err := s.blocking.GetWithContext(ctx)
+		if err != nil {
+			if errors.Is(err, workqueue.ErrQueueIsClosed) {
+				return nil, karta.ErrSchedulerClosed
 			}
+			return nil, err
+		}
+		letter, ok := val.(*workqueue.DeadLetter)
+		if !ok || letter == nil {
+			// 类型不匹配时继续出队（不应在正常使用中出现）
 			continue
 		}
-		if s.closed.Load() {
-			return nil, karta.ErrSchedulerClosed
+		if env, ok := letter.Payload.(*karta.TaskEnvelope); ok {
+			// 记录 DeadLetter → TaskEnvelope 映射，供 Done 使用
+			s.pending.Store(env, letter)
+			return env, nil
 		}
-		select {
-		case <-ctx.Done():
-			return nil, ctx.Err()
-		case <-s.notify:
-			backoff = minBackoff
-		case <-s.doneCh:
-			return nil, karta.ErrSchedulerClosed
-		case <-timer.C:
-			backoff *= 2
-			if backoff > maxBackoff {
-				backoff = maxBackoff
-			}
-		}
-		// Go 1.23+ 保证 Reset 返回后不会收到旧定时值，直接重设即可
-		timer.Reset(backoff)
 	}
 }
 
@@ -113,10 +101,11 @@ func (s *dlqScheduler) Len() int {
 	return s.queue.Len()
 }
 
+// Shutdown 关闭调度器，幂等。底层队列 Shutdown 会唤醒全部阻塞在
+// GetWithContext 上的消费者（返回 ErrQueueIsClosed）。
 func (s *dlqScheduler) Shutdown() {
 	if s.closed.CompareAndSwap(false, true) {
 		s.queue.Shutdown()
-		close(s.doneCh)
 	}
 }
 

@@ -70,3 +70,28 @@ func TestLifecycleManager_ShutdownTimeout(t *testing.T) {
 	assert.GreaterOrEqual(t, elapsed, 80*time.Millisecond,
 		"Shutdown should wait at least until timeout fires")
 }
+
+func TestLifecycleManager_Register_AfterShutdown_StopsImmediately(t *testing.T) {
+	c1 := &mockComponent{}
+	lm := NewLifecycleManager(WithManaged(c1))
+
+	lm.Shutdown()
+	require.True(t, c1.isStopped())
+
+	// Shutdown 之后 Register：组件不被跟踪，而是在调用 goroutine 立即 Stop，
+	// 不得被静默忽略（否则迟到注册的组件永不关闭）
+	late := &mockComponent{}
+	lm.Register(late)
+	assert.True(t, late.isStopped(),
+		"component registered after Shutdown should be stopped immediately")
+
+	// 多组件迟到注册同样全部立即停止
+	late2 := &mockComponent{delay: 10 * time.Millisecond}
+	late3 := &mockComponent{}
+	lm.Register(late2, late3)
+	assert.True(t, late2.isStopped())
+	assert.True(t, late3.isStopped())
+
+	// Shutdown 仍保持幂等
+	require.NotPanics(t, func() { lm.Shutdown() })
+}

@@ -316,7 +316,6 @@ func TestV1Config_Builder(t *testing.T) {
 		assert.Equal(t, 2, cfg.workers)
 		assert.Nil(t, cfg.callback)
 		assert.Nil(t, cfg.handlerFunc)
-		assert.False(t, cfg.withResult)
 	})
 
 	t.Run("full builder chain", func(t *testing.T) {
@@ -329,13 +328,11 @@ func TestV1Config_Builder(t *testing.T) {
 		cfg := NewV1Config().
 			WithWorkerNumber(8).
 			WithHandleFunc(handler).
-			WithCallback(cb).
-			WithResult()
+			WithCallback(cb)
 
 		assert.Equal(t, 8, cfg.workers)
 		assert.NotNil(t, cfg.callback)
 		assert.NotNil(t, cfg.handlerFunc)
-		assert.True(t, cfg.withResult)
 	})
 
 	t.Run("WithWorkerNumber rejects non-positive", func(t *testing.T) {
@@ -359,9 +356,6 @@ func TestV1Config_Builder(t *testing.T) {
 
 		cfg3 := cfg.WithHandleFunc(func(any) (any, error) { return nil, nil })
 		assert.Same(t, cfg, cfg3)
-
-		cfg4 := cfg.WithResult()
-		assert.Same(t, cfg, cfg4)
 
 		cfg5 := cfg.WithCallback(CallbackAdapter{})
 		assert.Same(t, cfg, cfg5)

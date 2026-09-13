@@ -148,3 +148,29 @@ func TestRetry_ContextCancel(t *testing.T) {
 	assert.Equal(t, context.Canceled, err)
 	assert.Equal(t, int32(0), calls.Load()) // handler 不应被调用
 }
+
+// TestRetry_WithAttempts_NonPositiveIgnored — C3：WithAttempts(n<=0) 必须被
+// 忽略（保持现值/默认值）。修复前 uint64(n) 将负数下溢为 2^64-1，
+// 造成事实上的无限重试。
+func TestRetry_WithAttempts_NonPositiveIgnored(t *testing.T) {
+	// 配置层：非正数被忽略，正数正常生效（包内直接断言默认值）
+	cfg := &retryConfig{attempts: 3, delay: 100 * time.Millisecond}
+	WithAttempts(-1)(cfg)
+	assert.Equal(t, uint64(3), cfg.attempts, "WithAttempts(-1) 应被忽略，保持默认值")
+	WithAttempts(0)(cfg)
+	assert.Equal(t, uint64(3), cfg.attempts, "WithAttempts(0) 应被忽略，保持默认值")
+	WithAttempts(5)(cfg)
+	assert.Equal(t, uint64(5), cfg.attempts, "正数应正常生效")
+
+	// 行为层：端到端仍按默认 3 次尝试收敛
+	//（修复前 -1 下溢为天文数字，本测试将因无限重试而超时）
+	var calls atomic.Int32
+	handler := func(ctx context.Context, input int) (int, error) {
+		calls.Add(1)
+		return 0, errRetryTest
+	}
+	mw := Retry[int, int](WithAttempts(-1), WithDelay(time.Millisecond))
+	_, err := mw(handler)(context.Background(), 1)
+	require.Error(t, err)
+	assert.Equal(t, int32(3), calls.Load(), "应使用默认 attempts=3")
+}

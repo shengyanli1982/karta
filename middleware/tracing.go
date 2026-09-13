@@ -2,10 +2,8 @@ package middleware
 
 import (
 	"context"
-	"fmt"
 
 	karta "github.com/shengyanli1982/karta/v2"
-	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/trace"
 )
@@ -13,7 +11,9 @@ import (
 const defaultSpanName = "karta.handler"
 
 // Tracing 链路追踪中间件
-// 为每个 handler 调用创建 span，记录输入/输出/错误。
+// 为每个 handler 调用创建 span，记录错误状态。
+// 不记录输入/输出值属性：热路径上的 fmt.Sprintf 格式化开销大，
+// 且可能将敏感数据泄漏到追踪后端。
 func Tracing[In, Out any](tracer trace.Tracer, opts ...TracingOption) karta.Middleware[In, Out] {
 	cfg := &tracingConfig{
 		spanName: defaultSpanName,
@@ -26,17 +26,10 @@ func Tracing[In, Out any](tracer trace.Tracer, opts ...TracingOption) karta.Midd
 		return func(ctx context.Context, input In) (Out, error) {
 			ctx, span := tracer.Start(ctx, cfg.spanName,
 				trace.WithSpanKind(trace.SpanKindInternal),
-				trace.WithAttributes(
-					attribute.String("handler.input", fmt.Sprintf("%v", input)),
-				),
 			)
 			defer span.End()
 
 			out, err := next(ctx, input)
-
-			span.SetAttributes(
-				attribute.String("handler.output", fmt.Sprintf("%v", out)),
-			)
 
 			if err != nil {
 				span.SetStatus(codes.Error, err.Error())

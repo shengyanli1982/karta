@@ -40,7 +40,6 @@ type V1Config struct {
 	workers     int
 	callback    *CallbackAdapter
 	handlerFunc func(any) (any, error)
-	withResult  bool
 }
 
 // NewV1Config 返回一个默认 workers=2 的配置（与 v2 DefaultWorkers 一致）。
@@ -67,11 +66,5 @@ func (c *V1Config) WithCallback(cb CallbackAdapter) *V1Config {
 // WithHandleFunc 设置 v1 风格的处理函数。
 func (c *V1Config) WithHandleFunc(fn func(any) (any, error)) *V1Config {
 	c.handlerFunc = fn
-	return c
-}
-
-// WithResult 标记是否在结果中保留错误信息（与 v1 行为一致）。
-func (c *V1Config) WithResult() *V1Config {
-	c.withResult = true
 	return c
 }

@@ -18,9 +18,16 @@ type retryConfig struct {
 	onRetry  func(attempt int, err error)
 }
 
-// WithAttempts 设置最大尝试次数（含首次执行）
+// WithAttempts 设置最大尝试次数（含首次执行）。
+// n <= 0 时忽略（保持现值/默认值）：uint64(n) 会把负数下溢为天文数字，
+// 造成事实上的无限重试（与根包 config.go 全选项范围校验的风格一致）。
 func WithAttempts(n int) RetryOption {
-	return func(c *retryConfig) { c.attempts = uint64(n) }
+	return func(c *retryConfig) {
+		if n <= 0 {
+			return
+		}
+		c.attempts = uint64(n)
+	}
 }
 
 // WithDelay 设置重试间隔时间

@@ -34,12 +34,10 @@ github.com/prometheus/procfs v0.15.1 h1:YagwOFzUgYfKKHX6Dr+sHT7km/hxC76UB0leargg
 github.com/prometheus/procfs v0.15.1/go.mod h1:fB45yRUv8NstnjriLhBQLuOUt+WW4BsoGhij/e3PBqk=
 github.com/rogpeppe/go-internal v1.10.0 h1:TMyTOH3F/DB16zRVcYyreMH6GnZZrwQVAoYjRBZyWFQ=
 github.com/rogpeppe/go-internal v1.10.0/go.mod h1:UQnix2H7Ngw/k4C5ijL5+65zddjncjaFoBhdsK/akog=
-github.com/shengyanli1982/gs v0.1.6 h1:sUm1F4VM7wNQCsK290MMfXgOGV2aIpyJC2WJ/ok0fBU=
-github.com/shengyanli1982/gs v0.1.6/go.mod h1:D71BApttgRbpQomMPWOGQQaPJTypfvsbktSIBzei0yU=
 github.com/shengyanli1982/retry v0.1.9 h1:xfjTRAQ9PlZGsuaDwTUOXybgWAH75YUEMLmIme1XFxQ=
 github.com/shengyanli1982/retry v0.1.9/go.mod h1:1C5LUAG0iRudzPTlvA5QHuzZ8JYDLeX0ikyYu1K4Dak=
-github.com/shengyanli1982/workqueue/v2 v2.3.2 h1:eTkxHidMmJtNwR7AB4mhQmGBaR9cf5+/lelrL42PZ8k=
-github.com/shengyanli1982/workqueue/v2 v2.3.2/go.mod h1:iWYemzK0ajTxntxqsQPlzVKEmkEqR01P/5LXpMmCGKk=
+github.com/shengyanli1982/workqueue/v2 v2.3.4 h1:eQlkovpX5Y17Lbh6ThJJX9o1ZSf4t69ro0Gp8JmwYzE=
+github.com/shengyanli1982/workqueue/v2 v2.3.4/go.mod h1:umM9M2z+zAn/fYxSJzB/gKZUETtpCP4UHkWyZzbOO+E=
 github.com/stretchr/testify v1.11.1 h1:7s2iGBzp5EwR7/aIZr8ao5+dra3wiQyKjjFuvgVKu7U=
 github.com/stretchr/testify v1.11.1/go.mod h1:wZwfW3scLgRK+23gO65QZefKpKQRnfz6sD981Nm4B6U=
 go.opentelemetry.io/otel v1.29.0 h1:PdomN/Al4q/lN6iBJEN3AwPvUiHPMlt93c8bqTG5Llw=

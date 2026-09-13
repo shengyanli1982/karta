@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"sync/atomic"
-	"time"
 
 	karta "github.com/shengyanli1982/karta/v2"
 	"github.com/shengyanli1982/workqueue/v2"
@@ -20,15 +19,15 @@ var _ karta.Scheduler = (*retryScheduler)(nil)
 // Enqueue 成功时会清除该指针遗留的重试计数：重试计数以指针为键，
 // 根包 TaskEnvelope 池复用指针后，旧任务的计数会串到新任务，
 // 因此每次新入队都视为新任务生命周期的开始。
-// 如需重试，通过类型断言访问 Retry 方法：
+// 如需重试，通过匿名接口断言访问 Retry 方法（retryScheduler 未导出，
+// 具体类型断言对外部包不可行；断言写法见 Retry 方法的文档示例）。
 //
-//	rs := sched.(*retryScheduler)  // 或使用接口断言
-//	rs.Retry(task, reason)
+// Dequeue 基于 BlockingGetQueue.GetWithContext 阻塞消费：重试延迟到期项由
+// 底层 scheduler 搬运（委托内层 DelayingQueue），等待内层即正确语义。
 type retryScheduler struct {
-	queue  workqueue.RetryQueue
-	closed atomic.Bool
-	notify chan struct{}
-	doneCh chan struct{}
+	queue    workqueue.RetryQueue
+	blocking workqueue.BlockingGetQueue // 构造时一次性断言，见 fifoScheduler.blocking
+	closed   atomic.Bool
 }
 
 // NewRetryScheduler 创建基于 workqueue.RetryQueue 的重试调度器。
@@ -39,10 +38,10 @@ func NewRetryScheduler(policy workqueue.RetryPolicy) karta.Scheduler {
 	if policy != nil {
 		cfg = cfg.WithPolicy(policy)
 	}
+	q := workqueue.NewRetryQueue(cfg)
 	return &retryScheduler{
-		queue:  workqueue.NewRetryQueue(cfg),
-		notify: make(chan struct{}, notifyChanCapacity()),
-		doneCh: make(chan struct{}),
+		queue:    q,
+		blocking: q.(workqueue.BlockingGetQueue),
 	}
 }
 
@@ -67,44 +66,24 @@ func (s *retryScheduler) Enqueue(task *karta.TaskEnvelope) error {
 	// （重试耗尽路径无需处理：workqueue.RetryQueue 在 ErrRetryExhausted
 	// 时已内部重置计数。）
 	s.queue.Forget(task)
-	select {
-	case s.notify <- struct{}{}:
-	default:
-	}
 	return nil
 }
 
+// Dequeue 阻塞获取任务：取到值返回；队列关闭返回 ErrSchedulerClosed
+// （底层队列仅经 Shutdown 关闭，关闭前 closed 已置位）；ctx 完成原样返回 ctx.Err()。
 func (s *retryScheduler) Dequeue(ctx context.Context) (*karta.TaskEnvelope, error) {
-	backoff := minBackoff
-	timer := time.NewTimer(backoff)
-	defer timer.Stop()
-
 	for {
-		val, err := s.queue.Get()
-		if err == nil {
-			if env, ok := val.(*karta.TaskEnvelope); ok {
-				return env, nil
+		val, err := s.blocking.GetWithContext(ctx)
+		if err != nil {
+			if errors.Is(err, workqueue.ErrQueueIsClosed) {
+				return nil, karta.ErrSchedulerClosed
 			}
-			continue
+			return nil, err
 		}
-		if s.closed.Load() {
-			return nil, karta.ErrSchedulerClosed
+		if env, ok := val.(*karta.TaskEnvelope); ok {
+			return env, nil
 		}
-		select {
-		case <-ctx.Done():
-			return nil, ctx.Err()
-		case <-s.notify:
-			backoff = minBackoff
-		case <-s.doneCh:
-			return nil, karta.ErrSchedulerClosed
-		case <-timer.C:
-			backoff *= 2
-			if backoff > maxBackoff {
-				backoff = maxBackoff
-			}
-		}
-		// Go 1.23+ 保证 Reset 返回后不会收到旧定时值，直接重设即可
-		timer.Reset(backoff)
+		// 类型不匹配时继续出队（不应在正常使用中出现）
 	}
 }
 
@@ -118,10 +97,11 @@ func (s *retryScheduler) Len() int {
 	return s.queue.Len()
 }
 
+// Shutdown 关闭调度器，幂等。底层队列 Shutdown 会唤醒全部阻塞在
+// GetWithContext 上的消费者（返回 ErrQueueIsClosed）。
 func (s *retryScheduler) Shutdown() {
 	if s.closed.CompareAndSwap(false, true) {
 		s.queue.Shutdown()
-		close(s.doneCh)
 	}
 }
 

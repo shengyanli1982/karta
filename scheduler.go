@@ -45,7 +45,9 @@ type TaskEnvelope struct {
 	Deadline  time.Time       // 截止时间
 	CreatedAt time.Time       // 创建时间
 	UserCtx   context.Context // 用户 Submit 时传入的 ctx
-	id        uint64          // 内部 ID，用于 pending map
+	// id 内部 ID：pipeline.submitInternal 统一赋值（所有调度器路径一致），
+	// 作为 Pipeline pending map 的键；lease 调度器交付的浅拷贝天然继承该值。
+	id uint64
 }
 
 // envelopeIDCounter 任务信封全局自增 ID 计数器
@@ -85,7 +87,8 @@ func (s *SimpleScheduler) Enqueue(task *TaskEnvelope) error {
 	if s.closed.Load() { // double-check under lock
 		return ErrSchedulerClosed
 	}
-	task.id = newEnvelopeID()
+	// 注意：不在此处赋值 task.id —— id 由 pipeline.submitInternal 在写入
+	// pending map 之前统一赋值，Enqueue 后置改写会导致 pending 键失配。
 	select {
 	case s.ch <- task:
 		s.len.Add(1)
