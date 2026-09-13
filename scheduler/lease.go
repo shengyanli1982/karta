@@ -14,6 +14,14 @@ import (
 // 编译期接口检查：确保 leaseScheduler 实现 Scheduler 接口
 var _ karta.Scheduler = (*leaseScheduler)(nil)
 
+// blockingLeasedQueue 是 workqueue v2.3.4+ leasedQueueImpl 提供的阻塞租约消费
+// 可选接口：GetWithLeaseWithContext 阻塞直到「内层队列取到值 / ctx 完成 /
+// 队列关闭」，成功后登记租约；timeout<=0 回退 config.leaseDuration。
+// LeasedQueue 接口未声明该方法（保护外部实现者兼容性），需类型断言使用。
+type blockingLeasedQueue interface {
+	GetWithLeaseWithContext(ctx context.Context, timeout time.Duration) (value any, leaseID string, err error)
+}
+
 // leaseEntry 记录一次 Dequeue 交付的租约信息。
 // leaseID 是底层队列的租约键，用于 Ack；owner 指向底层队列持有的原始
 // 任务指针，用于在任务完成时清理 owners 正向索引。
@@ -24,7 +32,7 @@ type leaseEntry struct {
 
 // leaseScheduler 将 workqueue.LeasedQueue 适配为 karta.Scheduler 接口。
 //
-// Dequeue 通过 GetWithLease 获取任务并绑定租约；
+// Dequeue 通过 GetWithLeaseWithContext 阻塞获取任务并绑定租约；
 // Done 通过 Ack 释放租约确认处理完成。
 // 租约超时的任务由底层队列自动重新入队。
 //
@@ -34,29 +42,29 @@ type leaseEntry struct {
 // 为键（与投递出去的对象指针无关），因此 Done(拷贝) 仍能正确 Ack
 // 原始对象的租约；已过期的租约 Ack 失败时被静默忽略。
 type leaseScheduler struct {
-	queue        workqueue.LeasedQueue
-	closed       atomic.Bool
-	leaseTimeout time.Duration
+	queue workqueue.LeasedQueue
+	// blocking 在构造时一次性断言（workqueue v2.3.4+ leasedQueueImpl 实现），
+	// 失败即 panic，属 fail-fast：Dequeue 热路径不再重复断言。
+	blocking blockingLeasedQueue
+	closed   atomic.Bool
 	// leases 以交付给消费者的拷贝指针为键，反查租约信息，供 Done 使用。
 	leases sync.Map // map[*karta.TaskEnvelope]*leaseEntry
 	// owners 以底层原始任务指针为键，记录当前交付在外的拷贝，
 	// 用于重投递时清理上一份未完成的 leases 记录，避免映射泄漏。
 	owners sync.Map // map[*karta.TaskEnvelope]*karta.TaskEnvelope
-	notify chan struct{}
-	doneCh chan struct{}
 }
 
 // NewLeaseScheduler 创建基于 workqueue.LeasedQueue 的租约调度器。
-// leaseTimeout 指定每次 Dequeue 获取的租约超时时间。
+// leaseTimeout 指定每次 Dequeue 获取的租约超时时间（<=0 时由底层
+// 回退为 workqueue 默认租约时长 30s）。
 func NewLeaseScheduler(leaseTimeout time.Duration) karta.Scheduler {
 	cfg := workqueue.NewLeasedQueueConfig().
 		WithLeaseDuration(leaseTimeout).
 		WithScanInterval(leaseScanInterval(leaseTimeout))
+	q := workqueue.NewLeasedQueue(cfg)
 	return &leaseScheduler{
-		queue:        workqueue.NewLeasedQueue(cfg),
-		leaseTimeout: leaseTimeout,
-		notify:       make(chan struct{}, notifyChanCapacity()),
-		doneCh:       make(chan struct{}),
+		queue:    q,
+		blocking: q.(blockingLeasedQueue),
 	}
 }
 
@@ -91,46 +99,26 @@ func (s *leaseScheduler) Enqueue(task *karta.TaskEnvelope) error {
 		}
 		return err
 	}
-	select {
-	case s.notify <- struct{}{}:
-	default:
-	}
 	return nil
 }
 
+// Dequeue 阻塞获取任务并登记租约：取到值返回浅拷贝；队列关闭返回
+// ErrSchedulerClosed（底层队列仅经 Shutdown 关闭，关闭前 closed 已置位）；
+// ctx 完成原样返回 ctx.Err()。timeout 传 0 回退构造时的 config.leaseDuration。
 func (s *leaseScheduler) Dequeue(ctx context.Context) (*karta.TaskEnvelope, error) {
-	backoff := minBackoff
-	timer := time.NewTimer(backoff)
-	defer timer.Stop()
-
 	for {
-		val, leaseID, err := s.queue.GetWithLease(s.leaseTimeout)
-		if err == nil {
-			if orig, ok := val.(*karta.TaskEnvelope); ok {
-				return s.deliver(orig, leaseID), nil
+		val, leaseID, err := s.blocking.GetWithLeaseWithContext(ctx, 0)
+		if err != nil {
+			if errors.Is(err, workqueue.ErrQueueIsClosed) {
+				return nil, karta.ErrSchedulerClosed
 			}
-			// 类型不匹配时释放租约
-			_ = s.queue.Ack(leaseID)
-			continue
+			return nil, err
 		}
-		if s.closed.Load() {
-			return nil, karta.ErrSchedulerClosed
+		if orig, ok := val.(*karta.TaskEnvelope); ok {
+			return s.deliver(orig, leaseID), nil
 		}
-		select {
-		case <-ctx.Done():
-			return nil, ctx.Err()
-		case <-s.notify:
-			backoff = minBackoff
-		case <-s.doneCh:
-			return nil, karta.ErrSchedulerClosed
-		case <-timer.C:
-			backoff *= 2
-			if backoff > maxBackoff {
-				backoff = maxBackoff
-			}
-		}
-		// Go 1.23+ 保证 Reset 返回后不会收到旧定时值，直接重设即可
-		timer.Reset(backoff)
+		// 类型不匹配时释放租约
+		_ = s.queue.Ack(leaseID)
 	}
 }
 
@@ -165,10 +153,11 @@ func (s *leaseScheduler) Len() int {
 	return s.queue.Len()
 }
 
+// Shutdown 关闭调度器，幂等。底层队列 Shutdown 会唤醒全部阻塞在
+// GetWithLeaseWithContext 上的消费者（返回 ErrQueueIsClosed）。
 func (s *leaseScheduler) Shutdown() {
 	if s.closed.CompareAndSwap(false, true) {
 		s.queue.Shutdown()
-		close(s.doneCh)
 	}
 }
 

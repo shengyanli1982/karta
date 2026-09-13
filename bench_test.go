@@ -2,7 +2,9 @@ package karta
 
 import (
 	"context"
+	"sync"
 	"testing"
+	"time"
 )
 
 // BenchmarkGroupMap — Group.Map 吞吐量（100 个 int→int 转换, 8 workers）
@@ -154,7 +156,11 @@ func BenchmarkPipelineSubmit_Parallel(b *testing.B) {
 		for pb.Next() {
 			f, err := p.Submit(context.Background(), i)
 			if err != nil {
-				b.Fatalf("Submit error: %v", err)
+				// RunParallel 的回调运行在并行 goroutine 中，不得调用
+				// b.Fatalf（FailNow→runtime.Goexit 仅允许在基准主
+				// goroutine 中调用）；记录错误并跳过本次迭代
+				b.Error("Submit error:", err)
+				continue
 			}
 			_ = f.Get(context.Background())
 			i++
@@ -162,14 +168,48 @@ func BenchmarkPipelineSubmit_Parallel(b *testing.B) {
 	})
 }
 
-// BenchmarkFutureThen — Pending Future + 异步 goroutine Resolve + Then 回调开销
+// BenchmarkFutureThen — 已 resolved Future 上 Then 的开销（注册 + 回调
+// goroutine 派发）。旧版每迭代 NewPendingFuture + go Resolve + channel
+// 同步，测量被 goroutine 创建与跨 goroutine 交接成本主导；改为对已
+// resolved Future 直接调用 Then（命中 Then 的已决议快速路径），用 WaitGroup
+// 批量协调排空，摊薄同步开销。基准名保持不变以维持历史对比。
 func BenchmarkFutureThen(b *testing.B) {
+	const drainBatch = 1024 // 批量排空，限制同时在飞的回调 goroutine 数量
+
+	var wg sync.WaitGroup
+	cb := func(Result[int]) { wg.Done() }
+	f := NewResolvedFuture[int](Result[int]{Value: 42})
+
+	b.ResetTimer()
 	b.ReportAllocs()
 	for i := 0; i < b.N; i++ {
-		f := NewPendingFuture[int]()
-		go f.Resolve(Result[int]{Value: i})
-		done := make(chan struct{})
-		f.Then(func(Result[int]) { close(done) })
-		<-done
+		wg.Add(1)
+		f.Then(cb)
+		if (i+1)%drainBatch == 0 {
+			wg.Wait()
+		}
+	}
+	wg.Wait()
+}
+
+// BenchmarkPipelineSubmitAfter — SubmitAfter 延迟提交吞吐（delay=1ms，
+// 串行提交并等待每次执行完成，覆盖延迟 goroutine + timer + 入队全路径）
+func BenchmarkPipelineSubmitAfter(b *testing.B) {
+	handler := Handler[int, int](func(ctx context.Context, input int) (int, error) {
+		return input * 2, nil
+	})
+	sched := NewSimpleScheduler(4096)
+	p := NewPipeline[int, int](handler, sched, WithPipelineWorkers(8))
+	defer p.Stop()
+
+	ctx := context.Background()
+	b.ResetTimer()
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		f, err := p.SubmitAfter(ctx, i, time.Millisecond)
+		if err != nil {
+			b.Fatalf("SubmitAfter error: %v", err)
+		}
+		_ = f.Get(ctx) // 等待执行完成后再进入下一迭代（延迟 goroutine 已退出）
 	}
 }

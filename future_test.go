@@ -138,3 +138,30 @@ func TestNewResolvedFuture_ConcurrentGetResolve(t *testing.T) {
 		assert.Equal(t, 42, r.Value, "round %d", round)
 	}
 }
+
+// TestFuture_Then_CallbackPanic_DoesNotCrash — C2：Then 回调 panic 必须被
+// recover 捕获（修复前 Then/Resolve 以裸 goroutine 直接调用用户回调，
+// panic 会击穿整个进程）。覆盖两条派发路径：
+//  1. Future 已 resolved：Then 内立即 go 派发
+//  2. Pending Future：Resolve 批量派发已注册回调
+//
+// 子 goroutine 中的 panic 无法被测试框架捕获——若 recover 缺失，测试进程
+// 会直接崩溃；本测试能运行到断言即证明进程存活。
+func TestFuture_Then_CallbackPanic_DoesNotCrash(t *testing.T) {
+	// 路径 1：已 resolved Future 上的 Then（立即派发）
+	f1 := NewResolvedFuture[int](Result[int]{Value: 1})
+	f1.Then(func(Result[int]) { panic("then callback boom") })
+
+	// 路径 2：先注册回调再 Resolve（Resolve 批量派发）；
+	// 一个回调 panic 不得影响同批其他回调的执行
+	f2 := NewPendingFuture[int]()
+	var secondCalled atomic.Bool
+	f2.Then(func(Result[int]) { panic("first callback boom") })
+	f2.Then(func(Result[int]) { secondCalled.Store(true) })
+	f2.Resolve(Result[int]{Value: 2})
+
+	// 等待回调 goroutine 执行完毕
+	time.Sleep(200 * time.Millisecond)
+	assert.True(t, secondCalled.Load(),
+		"panic 回调不得影响同批其他回调的执行")
+}

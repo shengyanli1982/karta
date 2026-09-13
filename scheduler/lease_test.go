@@ -163,17 +163,28 @@ func TestLease_DoneCopyAcksUnderlyingLease(t *testing.T) {
 
 // BenchmarkLeaseScheduler_EnqueueDequeue 测量 Lease 调度器在并发场景下
 // Enqueue + Dequeue 的吞吐（单 goroutine 循环：入队后立即出队）。
+//
+// 卫生约束：每迭代新建 envelope 且出队后必须 Done——旧写法跨迭代复用同一
+// 指针且从不 Done，底层租约登记（以 leaseID 为键）随迭代无界增长，过期租约
+// 还会被 reaper 重投递回队列，测的是泄漏路径而非真实吞吐。Done 会 Ack 租约，
+// 保持底层租约表与适配器 leases/owners 映射收支平衡。
 func BenchmarkLeaseScheduler_EnqueueDequeue(b *testing.B) {
 	s := NewLeaseScheduler(5 * time.Second)
 	defer s.Shutdown()
 
+	ctx := context.Background()
 	b.ResetTimer()
 	b.ReportAllocs()
 	b.RunParallel(func(pb *testing.PB) {
-		env := &karta.TaskEnvelope{Input: 1}
 		for pb.Next() {
-			_ = s.Enqueue(env)
-			_, _ = s.Dequeue(context.Background())
+			env := &karta.TaskEnvelope{Input: 1}
+			if err := s.Enqueue(env); err != nil {
+				continue
+			}
+			got, err := s.Dequeue(ctx)
+			if err == nil {
+				s.Done(got)
+			}
 		}
 	})
 }

@@ -118,8 +118,20 @@ func (f *Future[T]) Resolve(r Result[T]) {
 	f.mu.Unlock()
 
 	for _, cb := range cbs {
-		go cb(r)
+		go safeCallback(cb, r)
 	}
+}
+
+// safeCallback 在独立 goroutine 中执行用户回调并捕获其 panic。
+// 与库内"用户代码 panic 必捕获"的约定一致（pipeline executor、group
+// worker 均 recover 并转为错误结果）；Then 回调没有错误返回通道
+// （Future 已 resolve，回调签名为 func(Result[T])），故 panic 在此
+// 静默丢弃，仅保证不击穿进程。
+func safeCallback[T any](fn func(Result[T]), r Result[T]) {
+	defer func() {
+		_ = recover() // 静默丢弃：无错误通道可转换，见上方说明
+	}()
+	fn(r)
 }
 
 // Then 注册回调，返回自身以支持链式调用
@@ -129,7 +141,7 @@ func (f *Future[T]) Then(fn func(Result[T])) *Future[T] {
 	if f.state.Load()&futureResolved != 0 {
 		r := f.result
 		f.mu.Unlock()
-		go fn(r)
+		go safeCallback(fn, r)
 		return f
 	}
 	f.callbacks = append(f.callbacks, fn)

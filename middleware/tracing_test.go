@@ -26,7 +26,8 @@ func newTestExporter(t *testing.T) (*tracetest.InMemoryExporter, func()) {
 	return exporter, cleanup
 }
 
-// TestTracing_SpanCreated 成功执行，验证 span 被创建，有 handler.input/output 属性。
+// TestTracing_SpanCreated 成功执行，验证 span 被创建、状态为 Ok，
+// 且不记录 handler.input/output 值属性（避免热路径格式化与敏感数据泄漏）。
 func TestTracing_SpanCreated(t *testing.T) {
 	exporter, cleanup := newTestExporter(t)
 	defer cleanup()
@@ -48,21 +49,15 @@ func TestTracing_SpanCreated(t *testing.T) {
 	spans := exporter.GetSpans()
 	require.Len(t, spans, 1)
 	assert.Equal(t, "my.handler", spans[0].Name)
+	assert.Equal(t, codes.Ok, spans[0].Status.Code)
 
-	// 验证 handler.input 和 handler.output 属性
-	inputFound, outputFound := false, false
+	// 验证不记录输入/输出值属性
 	for _, attr := range spans[0].Attributes {
-		switch string(attr.Key) {
-		case "handler.input":
-			assert.Equal(t, "5", attr.Value.AsString())
-			inputFound = true
-		case "handler.output":
-			assert.Equal(t, "10", attr.Value.AsString())
-			outputFound = true
-		}
+		assert.NotEqual(t, "handler.input", string(attr.Key),
+			"input value attribute should not be recorded")
+		assert.NotEqual(t, "handler.output", string(attr.Key),
+			"output value attribute should not be recorded")
 	}
-	assert.True(t, inputFound, "handler.input attribute not found")
-	assert.True(t, outputFound, "handler.output attribute not found")
 }
 
 // TestTracing_Error handler 返回 error，span status=Error 且 RecordError 被调用。
@@ -96,16 +91,6 @@ func TestTracing_Error(t *testing.T) {
 
 	// 验证 RecordError 产生了 event
 	require.NotEmpty(t, spans[0].Events, "expected at least one event from RecordError")
-
-	// 验证 handler.input 属性仍然存在
-	inputFound := false
-	for _, attr := range spans[0].Attributes {
-		if string(attr.Key) == "handler.input" {
-			assert.Equal(t, "input", attr.Value.AsString())
-			inputFound = true
-		}
-	}
-	assert.True(t, inputFound, "handler.input attribute not found")
 }
 
 // TestTracing_Transparent 输入输出正确透传，不改变业务逻辑。

@@ -16,6 +16,30 @@ const seqThreshold = 128
 // 超过后切换为阻塞等待（避免长任务下忙自旋空转 CPU）。
 const spinLimit = 512
 
+// 并发路径批量认领（chunked claim）参数：
+// worker 每次以一次 nextIdx.Add 认领连续 chunk 项，替代逐项 Add(1)，
+// 将多 worker 对共享计数器的缓存行竞争降低约 chunk 倍。
+const (
+	// claimFactor 控制负载均衡粒度：全批至少切分为 workers*claimFactor 块，
+	// handler 耗时倾斜时尾部不均衡被块数摊薄。
+	claimFactor = 4
+	// claimCap 是单次认领上界，约束最坏尾部不均衡粒度（round1 报告 §5 建议 16~64）。
+	claimCap = 64
+)
+
+// claimChunk 计算并发路径的批量认领大小：clamp(n/(workers*claimFactor), 1, claimCap)。
+// n <= seqThreshold 的顺序路径不使用本函数。
+func claimChunk(n, workers int) int {
+	c := n / (workers * claimFactor)
+	if c < 1 {
+		return 1
+	}
+	if c > claimCap {
+		return claimCap
+	}
+	return c
+}
+
 // Group 是泛型同步批处理组件 (ADR-002)。
 // 使用 Map 对输入切片做并发处理，结果按输入顺序排列。
 type Group[In, Out any] struct {
@@ -199,38 +223,61 @@ func (sh *mapWorkCtx[In, Out]) runCore() {
 		}
 	}()
 
-	// per-item panic 保护：每项独立 recover，panic 后继续领取下一项
+	// 池化字段快照：n 与 targetCount 在 doneCount.Add 发布之前读取
+	//（池化字段快照纪律），chunk 在本次 Map 内对所有 worker 一致。
+	n := sh.n
+	chunk := int64(claimChunk(n, int(sh.targetCount)+1))
+
+	// per-item panic 保护：每项独立 recover，panic 后继续处理认领区间内的下一项
 	// （参考 mapSequCore 的重入结构）。保证每个输入恰好产生一个 Result，
-	// panic 项填充 Result{Err}，杜绝整批 recover 导致的 worker 提前退出与零值假成功
+	// panic 项填充 Result{Err}，杜绝整批 recover 导致的 worker 提前退出与零值假成功。
+	//
+	// 批量认领（chunked claim）：一次 Add(chunk) 认领连续区间 [base, base+chunk)，
+	// 替代逐项 Add(1) 的共享计数器缓存行竞争。认领语义：
+	//   - base >= n：区间整体越界，直接退出（Add 的过冲无副作用，int64 不回绕）；
+	//   - 尾部区间不足 chunk：钳制 end 到 n，处理完即退出（再认领必越界）；
+	//   - 区间内逐项处理且 per-item recover，已认领项必全部写入 Result，
+	//     不存在「已认领未处理」的空洞。
 	for {
-		idx := int(sh.nextIdx.Add(1) - 1)
-		if idx >= sh.n {
+		base := sh.nextIdx.Add(chunk) - chunk
+		if base >= int64(n) {
 			return
 		}
-		if workerCtx.Err() != nil {
-			sh.results[idx] = Result[Out]{Err: workerCtx.Err()}
-			continue
+		end := base + chunk
+		isTail := end > int64(n)
+		if isTail {
+			end = int64(n)
 		}
+		for idx64 := base; idx64 < end; idx64++ {
+			idx := int(idx64)
+			if workerCtx.Err() != nil {
+				sh.results[idx] = Result[Out]{Err: workerCtx.Err()}
+				continue
+			}
 
-		var panicErr error
-		func() {
-			defer func() {
-				if r := recover(); r != nil {
-					panicErr = fmt.Errorf("karta: handler panic: %v", r)
+			var panicErr error
+			func() {
+				defer func() {
+					if r := recover(); r != nil {
+						panicErr = fmt.Errorf("karta: handler panic: %v", r)
+					}
+				}()
+				// emptyCallback 快速路径，跳过接口方法调用
+				if !sh.isEmptyCb {
+					sh.cb.OnBefore(workerCtx, sh.inputs[idx])
+				}
+				val, err := sh.h(workerCtx, sh.inputs[idx])
+				sh.results[idx] = Result[Out]{Value: val, Err: err}
+				if !sh.isEmptyCb {
+					sh.cb.OnAfter(workerCtx, sh.inputs[idx], val, err)
 				}
 			}()
-			// emptyCallback 快速路径，跳过接口方法调用
-			if !sh.isEmptyCb {
-				sh.cb.OnBefore(workerCtx, sh.inputs[idx])
+			if panicErr != nil {
+				sh.results[idx] = Result[Out]{Err: panicErr}
 			}
-			val, err := sh.h(workerCtx, sh.inputs[idx])
-			sh.results[idx] = Result[Out]{Value: val, Err: err}
-			if !sh.isEmptyCb {
-				sh.cb.OnAfter(workerCtx, sh.inputs[idx], val, err)
-			}
-		}()
-		if panicErr != nil {
-			sh.results[idx] = Result[Out]{Err: panicErr}
+		}
+		if isTail {
+			return
 		}
 	}
 }

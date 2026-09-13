@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"sync/atomic"
-	"time"
 
 	karta "github.com/shengyanli1982/karta/v2"
 	"github.com/shengyanli1982/workqueue/v2"
@@ -18,23 +17,24 @@ import (
   - task.Delay > 0: 使用 PutAfter，在相对延迟后入队
   - 否则: 使用 Put，立即入队
 
+  Dequeue 基于 BlockingGetQueue.GetWithContext 阻塞消费：定时项到期后由
+  底层 scheduler 搬入内层队列（内层 Put 触发广播唤醒），等待内层即正确语义。
 */
 // 编译期接口检查：确保 timerScheduler 实现 Scheduler 接口
 var _ karta.Scheduler = (*timerScheduler)(nil)
 
 type timerScheduler struct {
-	queue  workqueue.TimerQueue
-	closed atomic.Bool
-	notify chan struct{}
-	doneCh chan struct{}
+	queue    workqueue.TimerQueue
+	blocking workqueue.BlockingGetQueue // 构造时一次性断言，见 fifoScheduler.blocking
+	closed   atomic.Bool
 }
 
 // NewTimerScheduler 创建基于 workqueue.TimerQueue 的定时调度器。
 func NewTimerScheduler() karta.Scheduler {
+	q := workqueue.NewTimerQueue(workqueue.NewTimerQueueConfig())
 	return &timerScheduler{
-		queue:  workqueue.NewTimerQueue(workqueue.NewTimerQueueConfig()),
-		notify: make(chan struct{}, notifyChanCapacity()),
-		doneCh: make(chan struct{}),
+		queue:    q,
+		blocking: q.(workqueue.BlockingGetQueue),
 	}
 }
 
@@ -60,44 +60,24 @@ func (s *timerScheduler) Enqueue(task *karta.TaskEnvelope) error {
 		}
 		return err
 	}
-	select {
-	case s.notify <- struct{}{}:
-	default:
-	}
 	return nil
 }
 
+// Dequeue 阻塞获取任务：取到值返回；队列关闭返回 ErrSchedulerClosed
+// （底层队列仅经 Shutdown 关闭，关闭前 closed 已置位）；ctx 完成原样返回 ctx.Err()。
 func (s *timerScheduler) Dequeue(ctx context.Context) (*karta.TaskEnvelope, error) {
-	backoff := minBackoff
-	timer := time.NewTimer(backoff)
-	defer timer.Stop()
-
 	for {
-		val, err := s.queue.Get()
-		if err == nil {
-			if env, ok := val.(*karta.TaskEnvelope); ok {
-				return env, nil
+		val, err := s.blocking.GetWithContext(ctx)
+		if err != nil {
+			if errors.Is(err, workqueue.ErrQueueIsClosed) {
+				return nil, karta.ErrSchedulerClosed
 			}
-			continue
+			return nil, err
 		}
-		if s.closed.Load() {
-			return nil, karta.ErrSchedulerClosed
+		if env, ok := val.(*karta.TaskEnvelope); ok {
+			return env, nil
 		}
-		select {
-		case <-ctx.Done():
-			return nil, ctx.Err()
-		case <-s.notify:
-			backoff = minBackoff
-		case <-s.doneCh:
-			return nil, karta.ErrSchedulerClosed
-		case <-timer.C:
-			backoff *= 2
-			if backoff > maxBackoff {
-				backoff = maxBackoff
-			}
-		}
-		// Go 1.23+ 保证 Reset 返回后不会收到旧定时值，直接重设即可
-		timer.Reset(backoff)
+		// 类型不匹配时继续出队（不应在正常使用中出现）
 	}
 }
 
@@ -109,10 +89,11 @@ func (s *timerScheduler) Len() int {
 	return s.queue.Len()
 }
 
+// Shutdown 关闭调度器，幂等。底层队列 Shutdown 会唤醒全部阻塞在
+// GetWithContext 上的消费者（返回 ErrQueueIsClosed）。
 func (s *timerScheduler) Shutdown() {
 	if s.closed.CompareAndSwap(false, true) {
 		s.queue.Shutdown()
-		close(s.doneCh)
 	}
 }
 

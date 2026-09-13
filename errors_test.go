@@ -10,8 +10,6 @@ import (
 
 func TestSentinelErrors(t *testing.T) {
 	require.NotNil(t, ErrPipelineClosed)
-	require.NotNil(t, ErrGroupStopped)
-	require.NotNil(t, ErrFutureTimeout)
 	require.NotNil(t, ErrSchedulerClosed)
 }
 

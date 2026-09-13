@@ -286,19 +286,21 @@ sched := karta.NewSimpleScheduler(256)
 p := karta.NewPipeline(handler, sched)
 ```
 
-For advanced scheduling, use the `scheduler` sub-package:
+For advanced scheduling, use the `scheduler` sub-package. Note that schedulers whose behavior depends on `TaskEnvelope` fields (`Priority`, `Delay`, `Timer`) or on explicit `Retry` calls (`Retry`, `DLQ`) only take full effect when you drive the `Scheduler` API directly — `Pipeline.Submit` never populates those fields, so such schedulers degrade to FIFO behind a Pipeline. For delayed submission through a Pipeline use `SubmitAfter`; for retries use `middleware.Retry`:
 
 ```go
 import "github.com/shengyanli1982/karta/v2/scheduler"
 
-// Priority-based scheduling
+// Priority-based scheduling (requires driving the Scheduler API directly;
+// behind a Pipeline it degrades to FIFO since TaskEnvelope.Priority is never set)
 sched := scheduler.NewPriorityScheduler()
 
-// Rate-limited scheduling
+// Rate-limited scheduling (fully effective behind a Pipeline — dequeue-side rate limiting)
 limiter := rate.NewLimiter(rate.Every(time.Second), 10)
 sched := scheduler.NewRateLimitingScheduler(limiter)
 
-// Delayed task scheduling
+// Delayed task scheduling (requires driving the Scheduler API directly;
+// behind a Pipeline use SubmitAfter instead — it delays client-side and clears TaskEnvelope.Delay)
 sched := scheduler.NewDelayScheduler()
 ```
 
@@ -338,7 +340,7 @@ go get github.com/shengyanli1982/karta/v2/v1compat
 
 ### Usage
 
-The v1compat API mirrors v1 exactly — same constructor signatures, same `any`-based types:
+The v1compat API closely mirrors v1 — same constructor signatures, same `any`-based types. The v1 `WithResult()` builder flag is not provided (it had no effect on v2 behavior); drop the call when migrating:
 
 ```go
 import "github.com/shengyanli1982/karta/v2/v1compat"

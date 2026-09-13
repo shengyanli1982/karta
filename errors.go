@@ -8,8 +8,6 @@ import (
 // 哨兵错误 (ADR-012: 分层错误模型)
 var (
 	ErrPipelineClosed  = errors.New("karta: pipeline is closed")
-	ErrGroupStopped    = errors.New("karta: group is stopped")
-	ErrFutureTimeout   = errors.New("karta: future get timeout")
 	ErrSchedulerClosed = errors.New("karta: scheduler is closed")
 )
 

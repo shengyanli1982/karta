@@ -4,9 +4,8 @@ go 1.23
 
 require (
 	github.com/prometheus/client_golang v1.21.1
-	github.com/shengyanli1982/gs v0.1.6
 	github.com/shengyanli1982/retry v0.1.9
-	github.com/shengyanli1982/workqueue/v2 v2.3.2
+	github.com/shengyanli1982/workqueue/v2 v2.3.4
 	github.com/stretchr/testify v1.11.1
 	go.opentelemetry.io/otel v1.29.0
 	go.opentelemetry.io/otel/sdk v1.29.0

@@ -112,10 +112,7 @@ func (q *errPutRetryQueue) Put(_ interface{}) error {
 
 func TestFIFO_DoubleCheck_ClosedAfterPutError(t *testing.T) {
 	customErr := errors.New("custom put error")
-	s := &fifoScheduler{
-		notify: make(chan struct{}, 1),
-		doneCh: make(chan struct{}),
-	}
+	s := &fifoScheduler{}
 	mockQ := &errPutQueue{
 		Queue:  workqueue.NewQueue(workqueue.NewQueueConfig()),
 		putErr: customErr,
@@ -129,10 +126,7 @@ func TestFIFO_DoubleCheck_ClosedAfterPutError(t *testing.T) {
 
 func TestPriority_DoubleCheck_ClosedAfterPutError(t *testing.T) {
 	customErr := errors.New("custom put error")
-	s := &priorityScheduler{
-		notify: make(chan struct{}, 1),
-		doneCh: make(chan struct{}),
-	}
+	s := &priorityScheduler{}
 	mockQ := &errPutPriorityQueue{
 		PriorityQueue: workqueue.NewPriorityQueue(workqueue.NewPriorityQueueConfig()),
 		putErr:        customErr,
@@ -148,10 +142,7 @@ func TestDelay_DoubleCheck_ClosedAfterPutError(t *testing.T) {
 	customErr := errors.New("custom put error")
 
 	// 无延迟路径
-	s := &delayScheduler{
-		notify: make(chan struct{}, 1),
-		doneCh: make(chan struct{}),
-	}
+	s := &delayScheduler{}
 	mockQ := &errPutDelayQueue{
 		DelayingQueue: workqueue.NewDelayingQueue(workqueue.NewDelayingQueueConfig()),
 		putErr:        customErr,
@@ -163,10 +154,7 @@ func TestDelay_DoubleCheck_ClosedAfterPutError(t *testing.T) {
 	assert.ErrorIs(t, err, karta.ErrSchedulerClosed)
 
 	// 有延迟路径
-	s2 := &delayScheduler{
-		notify: make(chan struct{}, 1),
-		doneCh: make(chan struct{}),
-	}
+	s2 := &delayScheduler{}
 	mockQ2 := &errPutDelayQueue{
 		DelayingQueue: workqueue.NewDelayingQueue(workqueue.NewDelayingQueueConfig()),
 		putErr:        customErr,
@@ -180,11 +168,7 @@ func TestDelay_DoubleCheck_ClosedAfterPutError(t *testing.T) {
 
 func TestLease_DoubleCheck_ClosedAfterPutError(t *testing.T) {
 	customErr := errors.New("custom put error")
-	s := &leaseScheduler{
-		leaseTimeout: 5 * time.Second,
-		notify:       make(chan struct{}, 1),
-		doneCh:       make(chan struct{}),
-	}
+	s := &leaseScheduler{}
 	mockQ := &errPutLeasedQueue{
 		LeasedQueue: workqueue.NewLeasedQueue(workqueue.NewLeasedQueueConfig().WithLeaseDuration(5 * time.Second)),
 		putErr:      customErr,
@@ -198,10 +182,7 @@ func TestLease_DoubleCheck_ClosedAfterPutError(t *testing.T) {
 
 func TestRateLimiting_DoubleCheck_ClosedAfterPutError(t *testing.T) {
 	customErr := errors.New("custom put error")
-	s := &rateLimitingScheduler{
-		notify: make(chan struct{}, 1),
-		doneCh: make(chan struct{}),
-	}
+	s := &rateLimitingScheduler{}
 	mockQ := &errPutRateLimitingQueue{
 		RateLimitingQueue: workqueue.NewRateLimitingQueue(workqueue.NewRateLimitingQueueConfig()),
 		putErr:            customErr,
@@ -216,10 +197,7 @@ func TestRateLimiting_DoubleCheck_ClosedAfterPutError(t *testing.T) {
 func TestRetry_DoubleCheck_ClosedAfterPutError(t *testing.T) {
 	customErr := errors.New("custom put error")
 	cfg := workqueue.NewRetryQueueConfig().WithKeyFunc(retryTaskKeyFunc)
-	s := &retryScheduler{
-		notify: make(chan struct{}, 1),
-		doneCh: make(chan struct{}),
-	}
+	s := &retryScheduler{}
 	mockQ := &errPutRetryQueue{
 		RetryQueue: workqueue.NewRetryQueue(cfg),
 		putErr:     customErr,
@@ -240,11 +218,7 @@ func TestFIFO_PutError_NotClosed_ReturnsOriginalError(t *testing.T) {
 		Queue:  workqueue.NewQueue(workqueue.NewQueueConfig()),
 		putErr: customErr,
 	}
-	s := &fifoScheduler{
-		queue:  mockQ,
-		notify: make(chan struct{}, 1),
-		doneCh: make(chan struct{}),
-	}
+	s := &fifoScheduler{queue: mockQ}
 
 	err := s.Enqueue(&karta.TaskEnvelope{Input: 1})
 	assert.ErrorIs(t, err, customErr)
@@ -256,11 +230,7 @@ func TestPriority_PutError_NotClosed_ReturnsOriginalError(t *testing.T) {
 		PriorityQueue: workqueue.NewPriorityQueue(workqueue.NewPriorityQueueConfig()),
 		putErr:        customErr,
 	}
-	s := &priorityScheduler{
-		queue:  mockQ,
-		notify: make(chan struct{}, 1),
-		doneCh: make(chan struct{}),
-	}
+	s := &priorityScheduler{queue: mockQ}
 
 	err := s.Enqueue(&karta.TaskEnvelope{Input: 1, Priority: 1})
 	assert.ErrorIs(t, err, customErr)
@@ -272,11 +242,7 @@ func TestDelay_PutError_NotClosed_ReturnsOriginalError(t *testing.T) {
 		DelayingQueue: workqueue.NewDelayingQueue(workqueue.NewDelayingQueueConfig()),
 		putErr:        customErr,
 	}
-	s := &delayScheduler{
-		queue:  mockQ,
-		notify: make(chan struct{}, 1),
-		doneCh: make(chan struct{}),
-	}
+	s := &delayScheduler{queue: mockQ}
 
 	err := s.Enqueue(&karta.TaskEnvelope{Input: 1, Delay: 0})
 	assert.ErrorIs(t, err, customErr)
@@ -291,12 +257,7 @@ func TestLease_PutError_NotClosed_ReturnsOriginalError(t *testing.T) {
 		LeasedQueue: workqueue.NewLeasedQueue(workqueue.NewLeasedQueueConfig().WithLeaseDuration(5 * time.Second)),
 		putErr:      customErr,
 	}
-	s := &leaseScheduler{
-		queue:        mockQ,
-		leaseTimeout: 5 * time.Second,
-		notify:       make(chan struct{}, 1),
-		doneCh:       make(chan struct{}),
-	}
+	s := &leaseScheduler{queue: mockQ}
 
 	err := s.Enqueue(&karta.TaskEnvelope{Input: 1})
 	assert.ErrorIs(t, err, customErr)
@@ -308,11 +269,7 @@ func TestRateLimiting_PutError_NotClosed_ReturnsOriginalError(t *testing.T) {
 		RateLimitingQueue: workqueue.NewRateLimitingQueue(workqueue.NewRateLimitingQueueConfig()),
 		putErr:            customErr,
 	}
-	s := &rateLimitingScheduler{
-		queue:  mockQ,
-		notify: make(chan struct{}, 1),
-		doneCh: make(chan struct{}),
-	}
+	s := &rateLimitingScheduler{queue: mockQ}
 
 	err := s.Enqueue(&karta.TaskEnvelope{Input: 1})
 	assert.ErrorIs(t, err, customErr)
@@ -325,11 +282,7 @@ func TestRetry_PutError_NotClosed_ReturnsOriginalError(t *testing.T) {
 		RetryQueue: workqueue.NewRetryQueue(cfg),
 		putErr:     customErr,
 	}
-	s := &retryScheduler{
-		queue:  mockQ,
-		notify: make(chan struct{}, 1),
-		doneCh: make(chan struct{}),
-	}
+	s := &retryScheduler{queue: mockQ}
 
 	err := s.Enqueue(&karta.TaskEnvelope{Input: 1})
 	assert.ErrorIs(t, err, customErr)

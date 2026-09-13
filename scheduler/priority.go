@@ -3,9 +3,7 @@ package scheduler
 import (
 	"context"
 	"errors"
-	"sync"
 	"sync/atomic"
-	"time"
 
 	karta "github.com/shengyanli1982/karta/v2"
 	"github.com/shengyanli1982/workqueue/v2"
@@ -13,20 +11,25 @@ import (
 
 // priorityScheduler 将 workqueue.PriorityQueue 适配为 karta.Scheduler 接口。
 // workqueue PriorityQueue: 数值越小优先级越高（小顶堆）。
+//
+// 无需外部互斥锁：workqueue v2.3.4 PriorityQueue 内部全程持锁
+// （PutWithPriority/Get/Done/Len/Shutdown 均在底层 queueImpl.lock 临界区内），
+// 并发安全由库自身保证。
+//
+// Dequeue 基于 BlockingGetQueue.GetWithContext 阻塞消费：堆即内层队列的
+// 存储本身，pop/等待者注册/广播唤醒全部复用内层机制。
 type priorityScheduler struct {
-	queue  workqueue.PriorityQueue
-	mu     sync.Mutex // 保护 queue 的并发访问（workqueue RBTree 非线程安全）
-	closed atomic.Bool
-	notify chan struct{}
-	doneCh chan struct{}
+	queue    workqueue.PriorityQueue
+	blocking workqueue.BlockingGetQueue // 构造时一次性断言，见 fifoScheduler.blocking
+	closed   atomic.Bool
 }
 
 // NewPriorityScheduler 创建基于 workqueue.PriorityQueue 的优先级调度器。
 func NewPriorityScheduler() karta.Scheduler {
+	q := workqueue.NewPriorityQueue(workqueue.NewPriorityQueueConfig())
 	return &priorityScheduler{
-		queue:  workqueue.NewPriorityQueue(workqueue.NewPriorityQueueConfig()),
-		notify: make(chan struct{}, notifyChanCapacity()),
-		doneCh: make(chan struct{}),
+		queue:    q,
+		blocking: q.(workqueue.BlockingGetQueue),
 	}
 }
 
@@ -34,10 +37,7 @@ func (s *priorityScheduler) Enqueue(task *karta.TaskEnvelope) error {
 	if s.closed.Load() {
 		return karta.ErrSchedulerClosed
 	}
-	s.mu.Lock()
-	err := s.queue.PutWithPriority(task, task.Priority)
-	s.mu.Unlock()
-	if err != nil {
+	if err := s.queue.PutWithPriority(task, task.Priority); err != nil {
 		if errors.Is(err, workqueue.ErrQueueIsClosed) {
 			return karta.ErrSchedulerClosed
 		}
@@ -47,46 +47,24 @@ func (s *priorityScheduler) Enqueue(task *karta.TaskEnvelope) error {
 		}
 		return err
 	}
-	select {
-	case s.notify <- struct{}{}:
-	default:
-	}
 	return nil
 }
 
+// Dequeue 阻塞获取任务：取到值返回；队列关闭返回 ErrSchedulerClosed
+// （底层队列仅经 Shutdown 关闭，关闭前 closed 已置位）；ctx 完成原样返回 ctx.Err()。
 func (s *priorityScheduler) Dequeue(ctx context.Context) (*karta.TaskEnvelope, error) {
-	backoff := minBackoff
-	timer := time.NewTimer(backoff)
-	defer timer.Stop()
-
 	for {
-		s.mu.Lock()
-		val, err := s.queue.Get()
-		s.mu.Unlock()
-		if err == nil {
-			if env, ok := val.(*karta.TaskEnvelope); ok {
-				return env, nil
+		val, err := s.blocking.GetWithContext(ctx)
+		if err != nil {
+			if errors.Is(err, workqueue.ErrQueueIsClosed) {
+				return nil, karta.ErrSchedulerClosed
 			}
-			continue
+			return nil, err
 		}
-		if s.closed.Load() {
-			return nil, karta.ErrSchedulerClosed
+		if env, ok := val.(*karta.TaskEnvelope); ok {
+			return env, nil
 		}
-		select {
-		case <-ctx.Done():
-			return nil, ctx.Err()
-		case <-s.notify:
-			backoff = minBackoff
-		case <-s.doneCh:
-			return nil, karta.ErrSchedulerClosed
-		case <-timer.C:
-			backoff *= 2
-			if backoff > maxBackoff {
-				backoff = maxBackoff
-			}
-		}
-		// Go 1.23+ 保证 Reset 返回后不会收到旧定时值，直接重设即可
-		timer.Reset(backoff)
+		// 类型不匹配时继续出队（不应在正常使用中出现）
 	}
 }
 
@@ -98,12 +76,11 @@ func (s *priorityScheduler) Len() int {
 	return s.queue.Len()
 }
 
+// Shutdown 关闭调度器，幂等。底层队列 Shutdown 会唤醒全部阻塞在
+// GetWithContext 上的消费者（返回 ErrQueueIsClosed）。
 func (s *priorityScheduler) Shutdown() {
 	if s.closed.CompareAndSwap(false, true) {
-		s.mu.Lock()
 		s.queue.Shutdown()
-		s.mu.Unlock()
-		close(s.doneCh)
 	}
 }
 

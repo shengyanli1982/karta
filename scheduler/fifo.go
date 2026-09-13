@@ -3,44 +3,32 @@ package scheduler
 import (
 	"context"
 	"errors"
-	"runtime"
 	"sync/atomic"
-	"time"
 
 	karta "github.com/shengyanli1982/karta/v2"
 	"github.com/shengyanli1982/workqueue/v2"
 )
 
-// Dequeue 退避参数（包级别共享，供所有调度器使用）
-const (
-	minBackoff = 10 * time.Millisecond
-	maxBackoff = 500 * time.Millisecond
-)
-
-// notifyChanCapacity 根据 CPU 数量计算 notify channel 容量，
-// 避免高吞吐下非阻塞发送丢通知；下限为 4。
-func notifyChanCapacity() int {
-	cap := runtime.NumCPU() * 2
-	if cap < 4 {
-		cap = 4
-	}
-	return cap
-}
-
 // fifoScheduler 将 workqueue.Queue 适配为 karta.Scheduler 接口。
+//
+// Dequeue 基于 workqueue v2.3.4+ 的可选接口 BlockingGetQueue.GetWithContext
+// 阻塞消费：阻塞直到「取到值 / ctx 完成 / 队列关闭」三者之一，永不返回
+// ErrQueueIsEmpty。入队唤醒（Put 触发广播）与关闭唤醒（Shutdown 关闭
+// closedCh 唤醒全部等待者）均由底层队列保证，适配器无需自建通知设施。
 type fifoScheduler struct {
-	queue  workqueue.Queue
-	closed atomic.Bool
-	notify chan struct{}
-	doneCh chan struct{}
+	queue workqueue.Queue
+	// blocking 在构造时一次性断言（workqueue v2.3.4+ 全部队列类型均实现），
+	// 失败即 panic，属 fail-fast：Dequeue 热路径不再重复断言。
+	blocking workqueue.BlockingGetQueue
+	closed   atomic.Bool
 }
 
 // NewFIFOScheduler 创建基于 workqueue.Queue 的 FIFO 调度器。
 func NewFIFOScheduler() karta.Scheduler {
+	q := workqueue.NewQueue(workqueue.NewQueueConfig())
 	return &fifoScheduler{
-		queue:  workqueue.NewQueue(workqueue.NewQueueConfig()),
-		notify: make(chan struct{}, notifyChanCapacity()),
-		doneCh: make(chan struct{}),
+		queue:    q,
+		blocking: q.(workqueue.BlockingGetQueue),
 	}
 }
 
@@ -58,48 +46,24 @@ func (s *fifoScheduler) Enqueue(task *karta.TaskEnvelope) error {
 		}
 		return err
 	}
-	// 非阻塞通知：唤醒可能正在等待的 Dequeue
-	select {
-	case s.notify <- struct{}{}:
-	default:
-	}
 	return nil
 }
 
+// Dequeue 阻塞获取任务：取到值返回；队列关闭返回 ErrSchedulerClosed
+// （底层队列仅经 Shutdown 关闭，关闭前 closed 已置位）；ctx 完成原样返回 ctx.Err()。
 func (s *fifoScheduler) Dequeue(ctx context.Context) (*karta.TaskEnvelope, error) {
-	backoff := minBackoff
-	timer := time.NewTimer(backoff)
-	defer timer.Stop()
-
 	for {
-		val, err := s.queue.Get()
-		if err == nil {
-			if env, ok := val.(*karta.TaskEnvelope); ok {
-				return env, nil
+		val, err := s.blocking.GetWithContext(ctx)
+		if err != nil {
+			if errors.Is(err, workqueue.ErrQueueIsClosed) {
+				return nil, karta.ErrSchedulerClosed
 			}
-			continue
+			return nil, err
 		}
-		// 队列空或已关闭
-		if s.closed.Load() {
-			return nil, karta.ErrSchedulerClosed
+		if env, ok := val.(*karta.TaskEnvelope); ok {
+			return env, nil
 		}
-		select {
-		case <-ctx.Done():
-			return nil, ctx.Err()
-		case <-s.notify:
-			// 收到入队通知，重置退避以尽快取到任务
-			backoff = minBackoff
-		case <-s.doneCh:
-			return nil, karta.ErrSchedulerClosed
-		case <-timer.C:
-			// timer 触发，指数退避（channel 已在 select 中被消费）
-			backoff *= 2
-			if backoff > maxBackoff {
-				backoff = maxBackoff
-			}
-		}
-		// Go 1.23+ 保证 Reset 返回后不会收到旧定时值，直接重设即可
-		timer.Reset(backoff)
+		// 类型不匹配时继续出队（不应在正常使用中出现）
 	}
 }
 
@@ -111,10 +75,11 @@ func (s *fifoScheduler) Len() int {
 	return s.queue.Len()
 }
 
+// Shutdown 关闭调度器，幂等。底层队列 Shutdown 会唤醒全部阻塞在
+// GetWithContext 上的消费者（返回 ErrQueueIsClosed）。
 func (s *fifoScheduler) Shutdown() {
 	if s.closed.CompareAndSwap(false, true) {
 		s.queue.Shutdown()
-		close(s.doneCh)
 	}
 }
 

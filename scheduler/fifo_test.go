@@ -80,17 +80,27 @@ func TestFIFO_DequeueAfterShutdown(t *testing.T) {
 
 // BenchmarkFIFOScheduler_EnqueueDequeue 测量 FIFO 调度器在并发场景下
 // Enqueue + Dequeue 的吞吐（单 goroutine 循环：入队后立即出队）。
+//
+// 卫生约束：每迭代新建 envelope（跨迭代共享指针违反"不同任务不同信封"的
+// 真实使用模式，且底层簿记按值追踪时会把迭代混为同一任务）；出队后必须
+// Done，满足 Queue 消费契约（Get 成功后应 Done），保持底层在途簿记收支平衡。
 func BenchmarkFIFOScheduler_EnqueueDequeue(b *testing.B) {
 	s := NewFIFOScheduler()
 	defer s.Shutdown()
 
+	ctx := context.Background()
 	b.ResetTimer()
 	b.ReportAllocs()
 	b.RunParallel(func(pb *testing.PB) {
-		env := &karta.TaskEnvelope{Input: 1}
 		for pb.Next() {
-			_ = s.Enqueue(env)
-			_, _ = s.Dequeue(context.Background())
+			env := &karta.TaskEnvelope{Input: 1}
+			if err := s.Enqueue(env); err != nil {
+				continue
+			}
+			got, err := s.Dequeue(ctx)
+			if err == nil {
+				s.Done(got)
+			}
 		}
 	})
 }

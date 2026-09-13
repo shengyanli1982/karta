@@ -24,15 +24,20 @@ type Pipeline[In, Out any] struct {
 	once          sync.Once
 	closed        atomic.Bool
 	running       atomic.Int64
-	pendingMu     sync.Mutex                     // 保护 pending/closed/wg.Add 的共享临界区
-	pending       map[*TaskEnvelope]*Future[Out] // 替换 sync.Map，减少热路径分配
-	workerLimiter *rate.Limiter                  // worker spawn 速率控制
+	pendingMu     sync.Mutex              // 保护 pending/closed/wg.Add 的共享临界区
+	pending       map[uint64]*Future[Out] // 键为 TaskEnvelope.id：lease 调度器交付浅拷贝（新指针），指针键控必然 miss（P0 N1）
+	workerLimiter *rate.Limiter           // worker spawn 速率控制
 }
 
 // NewPipeline 创建并启动一个 Pipeline
 // handler: 默认任务处理函数
 // scheduler: 调度器（不可为 nil）
 // opts: 可选配置
+//
+// 注意：一个 Scheduler 实例只能服务一个 Pipeline。pending future 映射是
+// per-pipeline 的，多个 Pipeline 共享同一 Scheduler 时会互相取走对方的
+// envelope（取走方 pending 未命中，任务被静默 Done 丢弃），请为每个
+// Pipeline 创建独立的 Scheduler。
 //
 // Panics: scheduler 不可为 nil
 func NewPipeline[In, Out any](
@@ -57,7 +62,7 @@ func NewPipeline[In, Out any](
 		mws:           toMiddlewareSlice[In, Out](o.middleware),
 		ctx:           ctx,
 		cancel:        cancel,
-		pending:       make(map[*TaskEnvelope]*Future[Out]),
+		pending:       make(map[uint64]*Future[Out]),
 		workerLimiter: rate.NewLimiter(rate.Limit(o.spawnRate), o.burstLimit),
 	}
 
@@ -106,8 +111,8 @@ func (p *Pipeline[In, Out]) Stop() {
 		p.wg.Wait()
 		// 清理所有等待中的 pending future，防止 Get() 永久阻塞
 		p.pendingMu.Lock()
-		for env, f := range p.pending {
-			delete(p.pending, env)
+		for id, f := range p.pending {
+			delete(p.pending, id)
 			f.Resolve(Result[Out]{Err: ErrPipelineClosed})
 		}
 		p.pendingMu.Unlock()
@@ -146,6 +151,11 @@ func (p *Pipeline[In, Out]) submitInternal(
 	}
 	envelope.UserCtx = ctx
 	envelope.CreatedAt = time.Now()
+	// 统一赋值 envelope id（所有调度器路径一致，P0 N1 修复）：pending map 以
+	// id 为键，lease 调度器交付的浅拷贝天然继承 id，executor 仍能命中。
+	// newEnvelopeID 自增起点为 1，与池化清零值 0 不冲突；赋值发生在 Enqueue
+	// 发布之前，经队列锁/channel 与 executor 的读取构成 happens-before。
+	envelope.id = newEnvelopeID()
 
 	if delay > 0 {
 		// 延迟提交：goroutine 等待 timer 触发后入队
@@ -177,20 +187,25 @@ func (p *Pipeline[In, Out]) submitInternal(
 					return
 				}
 				// 先存 pending 再入队，避免 executor 取走时找不到 future
-				p.pending[envelope] = future
+				p.pending[envelope.id] = future
 				p.pendingMu.Unlock()
 				err := p.scheduler.Enqueue(envelope)
 				if err != nil {
 					p.pendingMu.Lock()
-					delete(p.pending, envelope)
+					delete(p.pending, envelope.id)
 					p.pendingMu.Unlock()
-					future.Resolve(Result[Out]{Err: err})
+					// 与即时路径同构：Enqueue 失败包 SubmitError，
+					// 保证 errors.As 判型的调用方在两条路径行为一致
+					future.Resolve(Result[Out]{Err: &SubmitError{Cause: err}})
 					putEnvelope(envelope)
 					return
 				}
 				p.trySpawnWorker() // 与即时路径对称：按需启动新 worker
 			case <-p.ctx.Done():
-				future.Resolve(Result[Out]{Err: p.ctx.Err()})
+				// p.ctx 仅由 Stop 取消：与 timer 分支的 closed 检查统一，
+				// resolve ErrPipelineClosed（而非 context.Canceled），
+				// 包 SubmitError 与延迟路径 Enqueue 失败同构
+				future.Resolve(Result[Out]{Err: &SubmitError{Cause: ErrPipelineClosed}})
 				putEnvelope(envelope)
 			case <-ctx.Done():
 				future.Resolve(Result[Out]{Err: ctx.Err()})
@@ -208,12 +223,12 @@ func (p *Pipeline[In, Out]) submitInternal(
 		putEnvelope(envelope)
 		return nil, ErrPipelineClosed
 	}
-	p.pending[envelope] = future
+	p.pending[envelope.id] = future
 	p.pendingMu.Unlock()
 	err := p.scheduler.Enqueue(envelope)
 	if err != nil {
 		p.pendingMu.Lock()
-		delete(p.pending, envelope)
+		delete(p.pending, envelope.id)
 		p.pendingMu.Unlock()
 		putEnvelope(envelope)
 		return nil, &SubmitError{Cause: err}
@@ -290,6 +305,17 @@ func (p *Pipeline[In, Out]) executor(started chan<- struct{}) {
 
 			if err != nil {
 				if p.ctx.Err() != nil || p.scheduler.IsClosed() {
+					return
+				}
+				// 错误路径 pacing：Dequeue 快速返错（如自定义 Scheduler 持续
+				// 立即失败）时不得立刻重试，否则形成忙自旋（实证 500ms 内
+				// 114 万次调用、单核 100%）。等待本轮 scanTimer 到期，复用
+				// scanInterval 节奏后重试；p.ctx 取消（Stop）立即唤醒退出，
+				// 不会因 pacing 卡住 Stop。正常超时场景下 scanTimer 与
+				// dequeueCtx 同节奏到期，此等待即刻返回，无额外延迟。
+				select {
+				case <-scanTimer.C:
+				case <-p.ctx.Done():
 					return
 				}
 			} else {
@@ -396,15 +422,17 @@ func (p *Pipeline[In, Out]) executor(started chan<- struct{}) {
 }
 
 // loadAndDeletePending 从 pending map 中取出并删除 future
-// 使用 envelope 指针作为 key（与 submitInternal 一致）
+// 以 envelope.id 为键（与 submitInternal 一致，P0 N1 修复）：lease 调度器
+// Dequeue 交付原始 envelope 的浅拷贝（新指针），指针键控必然 miss 导致任务
+// 被静默丢弃；浅拷贝继承 id 字段，id 键控对拷贝交付天然命中。
 func (p *Pipeline[In, Out]) loadAndDeletePending(envelope *TaskEnvelope) *Future[Out] {
 	p.pendingMu.Lock()
-	future, ok := p.pending[envelope]
+	future, ok := p.pending[envelope.id]
 	if !ok {
 		p.pendingMu.Unlock()
 		return nil
 	}
-	delete(p.pending, envelope)
+	delete(p.pending, envelope.id)
 	p.pendingMu.Unlock()
 	return future
 }
