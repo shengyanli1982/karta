@@ -2,6 +2,7 @@ package karta
 
 import (
 	"context"
+	"sync"
 	"testing"
 	"time"
 
@@ -92,4 +93,90 @@ func TestSimpleScheduler_ImplementsInterface(t *testing.T) {
 	var s Scheduler = NewSimpleScheduler(64)
 	defer s.Shutdown()
 	assert.NotNil(t, s)
+}
+
+// TestSimpleScheduler_EnqueueAfterShutdown — 钉住不变量 1：
+// Shutdown 后 Enqueue 必须返回 ErrSchedulerClosed（closed.Load fast-path）。
+// 多次调用确保 fast-path 稳定，不受缓冲状态影响。
+func TestSimpleScheduler_EnqueueAfterShutdown(t *testing.T) {
+	s := NewSimpleScheduler(64)
+	s.Shutdown()
+
+	for i := 0; i < 10; i++ {
+		err := s.Enqueue(&TaskEnvelope{Input: i})
+		assert.ErrorIs(t, err, ErrSchedulerClosed, "第 %d 次 Enqueue 后应返回 ErrSchedulerClosed", i)
+	}
+}
+
+// TestSimpleScheduler_DequeueAfterShutdown_DrainsBuffer — 钉住不变量 2 与 6：
+// Shutdown 后 Dequeue 必须先返回剩余缓冲项（FIFO 顺序），缓冲空后返回
+// ErrSchedulerClosed（drain 语义）；drain 过程中 len 计数须一致。
+func TestSimpleScheduler_DequeueAfterShutdown_DrainsBuffer(t *testing.T) {
+	s := NewSimpleScheduler(64)
+
+	require.NoError(t, s.Enqueue(&TaskEnvelope{Input: 1}))
+	require.NoError(t, s.Enqueue(&TaskEnvelope{Input: 2}))
+	require.NoError(t, s.Enqueue(&TaskEnvelope{Input: 3}))
+	assert.Equal(t, 3, s.Len())
+
+	// Shutdown 后不再 close(ch)（新实现），但 drain 语义必须保留
+	s.Shutdown()
+	assert.True(t, s.IsClosed())
+
+	ctx := context.Background()
+
+	// 必须按 FIFO 顺序排空剩余缓冲项
+	for i, expected := range []any{1, 2, 3} {
+		task, err := s.Dequeue(ctx)
+		require.NoError(t, err, "第 %d 个 drain 应返回缓冲任务而非 ErrSchedulerClosed", i)
+		assert.Equal(t, expected, task.Input)
+		assert.Equal(t, 2-i, s.Len(), "drain 后 len 应递减")
+	}
+
+	// 缓冲空后必须返回 ErrSchedulerClosed
+	_, err := s.Dequeue(ctx)
+	assert.ErrorIs(t, err, ErrSchedulerClosed)
+	assert.Equal(t, 0, s.Len())
+
+	// Shutdown 后 Enqueue 必须返回 ErrSchedulerClosed
+	err = s.Enqueue(&TaskEnvelope{Input: 99})
+	assert.ErrorIs(t, err, ErrSchedulerClosed)
+}
+
+// TestSimpleScheduler_ConcurrentEnqueueShutdown_NoPanic — 钉住不变量 3 与 4：
+// 并发 Enqueue + Shutdown 不得 panic（ch 永不关闭，无 send-on-closed 风险；
+// 旧实现由 mu 保护）。-race 验证无数据竞争。Shutdown 幂等（once）。
+func TestSimpleScheduler_ConcurrentEnqueueShutdown_NoPanic(t *testing.T) {
+	s := NewSimpleScheduler(64)
+
+	var wg sync.WaitGroup
+	stop := make(chan struct{})
+
+	// 并发 Enqueue goroutine
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		i := 0
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+				// send 不得 panic：新实现 ch 永不关闭，旧实现 mu 保护
+				_ = s.Enqueue(&TaskEnvelope{Input: i})
+				i++
+			}
+		}
+	}()
+
+	// 让 Enqueue 跑一会，建立并发窗口
+	time.Sleep(10 * time.Millisecond)
+
+	// 并发 Shutdown（幂等，多次调用也安全）
+	s.Shutdown()
+	s.Shutdown()
+	close(stop)
+	wg.Wait()
+
+	assert.True(t, s.IsClosed())
 }
