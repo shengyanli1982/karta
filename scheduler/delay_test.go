@@ -46,7 +46,8 @@ func TestDelay_WithDelay(t *testing.T) {
 	assert.Equal(t, "delayed", env.Input)
 
 	elapsed := time.Since(start)
-	assert.GreaterOrEqual(t, elapsed, 100*time.Millisecond, "should wait at least the delay duration")
+	// 5ms 容差吸收 Go 定时器轮亚毫秒提前触发抖动；>5ms 提前交付仍判失败
+	assert.GreaterOrEqual(t, elapsed, 95*time.Millisecond, "should wait at least the delay duration (minus timer jitter tolerance)")
 	assert.Less(t, elapsed, 2*time.Second, "should not take too long")
 }
 

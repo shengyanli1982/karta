@@ -193,7 +193,6 @@ LifecycleManager          Signal-aware graceful shutdown coordinator
 | `WithIdleTimeout(d time.Duration)`   | Idle worker auto-exit timeout                    | `10s`   |
 | `WithScanInterval(d time.Duration)`  | Scheduler poll interval                          | `3s`    |
 | `WithSpawnRate(n int)`               | Worker spawn rate limit (per second)             | `4`     |
-| `WithBurstLimit(n int)`              | Maximum burst size for worker spawning           | `8`     |
 | `WithPipelineCallback(cb Callback)`  | Lifecycle callback                               | no-op   |
 | `WithPipelineMiddleware(mws ...any)` | Middleware to wrap the handler                   | none    |
 
@@ -272,25 +271,26 @@ The `Shutdown()` method is idempotent and respects the global timeout. Slow comp
 
 ## Performance
 
-Karta is optimized for high-throughput workloads with minimal allocation overhead. Benchmark results measured on i5-12400F / Windows / go1.25:
+Karta is optimized for high-throughput workloads with minimal allocation overhead. Benchmark results measured on i5-12400F / Windows / go1.26:
 
-| Benchmark                                     | ns/op  | B/op  | allocs/op |
-| --------------------------------------------- | ------ | ----- | --------- |
-| `GroupMap` (100 items)                        | ~635   | 2688  | 1         |
-| `GroupMap_Parallel` (100 items)               | ~464   | 2688  | 1         |
-| `GroupMap_LargeBatch` (1000 items, 8 workers) | ~12340 | 25039 | 9         |
-| `PipelineSubmit`                              | ~1483  | 205   | 3         |
-| `PipelineSubmit_Parallel`                     | ~1519  | 207   | 3         |
-| `FutureGet` (resolved)                        | ~30    | 80    | 1         |
-| `FutureResolve`                               | ~46    | 80    | 1         |
-| `FutureThen`                                  | ~243   | 48    | 1         |
-| `MiddlewareChain` (3 MW)                      | ~1.36  | 0     | 0         |
-| `SimpleScheduler`                             | ~103   | 0     | 0         |
+| Benchmark                                     | ns/op       | B/op  | allocs/op |
+| --------------------------------------------- | ----------- | ----- | --------- |
+| `GroupMap` (100 items)                        | ~648        | 2688  | 1         |
+| `GroupMap_Parallel` (100 items)               | ~457        | 2688  | 1         |
+| `GroupMap_LargeBatch` (1000 items, 8 workers) | ~12355      | 25039 | 9         |
+| `PipelineSubmit`                              | ~1495       | 206   | 3         |
+| `PipelineSubmit_Parallel`                     | ~1238       | 208   | 3         |
+| `PipelineSubmitAfter` (1ms delay)             | ~1,777,000  | 521   | 7         |
+| `FutureGet` (resolved)                        | ~35         | 80    | 1         |
+| `FutureResolve`                               | ~71         | 80    | 1         |
+| `FutureThen`                                  | ~254        | 48    | 1         |
+| `MiddlewareChain` (3 MW)                      | ~1.35       | 0     | 0         |
+| `SimpleScheduler`                             | ~91         | 0     | 0         |
 
-<sub>Note: `FutureThen` measures the `Then` fast path on an already-resolved future; `PipelineSubmit_Parallel` has inherent high variance (±20%).</sub>
+<sub>Note: `FutureThen` measures the `Then` fast path on an already-resolved future; `PipelineSubmitAfter` includes the 1ms timer wait; `PipelineSubmit_Parallel` has inherent high variance (±20%).</sub>
 
 Key optimizations:
-- **Sequential fast path**: `Group.Map` bypasses goroutine scheduling for small batches (<128 items), achieving single-digit microsecond latencies.
+- **Sequential fast path**: `Group.Map` bypasses goroutine scheduling for small batches (≤128 items), achieving single-digit microsecond latencies.
 - **Lazy channel allocation**: `Future` only allocates a `done` channel when a `Get` caller actually blocks, saving allocations on resolved futures.
 - **sync.Pool reuse**: `TaskEnvelope` and pipeline work contexts are pooled, reducing per-task allocations.
 - **Hybrid wait for large batches**: `Group.Map`'s large-batch parallel path combines bounded spinning with blocking waits to balance tail latency against CPU overhead.
