@@ -16,6 +16,10 @@ const (
 // Future 是异步结果容器 (ADR-004/005: Pipeline 使用)
 // 线程安全，支持 Get(ctx) 超时取消和 Then(fn) 链式回调
 //
+// 必须经 NewPendingFuture / NewResolvedFuture 创建：零值 Future 的
+// cond.L 为 nil（未绑定），不可取消 ctx 的阻塞 Get 进入 Cond 慢路径
+// 时将 panic。
+//
 // 内存优化策略（对比原始实现）:
 //   - Get 添加 atomic 快速路径：已 resolved 时跳过 select 开销
 //   - Resolve 去掉 sync.Once，改为 atomic.CompareAndSwap（CAS）+ close(done) 替代
@@ -27,12 +31,24 @@ const (
 //   - done channel 延迟分配（lazy）：仅在 Get 慢路径确实需要阻塞时才分配，
 //     消除热路径（Resolve→Get 快速路径场景）中的 channel 分配
 //   - NewResolvedFuture 使用共享已关闭 channel（resolvedSentinel），消除每次分配
+//   - T3：Get 慢路径按 ctx 可取消性分流——不可取消 ctx（Done()==nil，如
+//     context.Background()）使用内嵌 sync.Cond 阻塞等待，消除慢路径每次
+//     96B 的 hchan 分配；可取消 ctx 保留 lazy done-chan + select 路径
+//     （取消/超时语义逐字不变）
 type Future[T any] struct {
-	done      chan struct{} // 延迟分配：nil 表示尚未有阻塞 Get；非 nil 时为等待通道
-	result    Result[T]     // 普通字段，受 state 的 resolved 位 fence 保护
-	state     atomic.Uint32 // 状态字：futureClaimed|futureResolved 位组合（见上方常量注释）
-	mu        sync.Mutex
-	callbacks []func(Result[T])
+	done   chan struct{} // 延迟分配：nil 表示尚未有阻塞 Get；非 nil 时为等待通道（仅可取消 ctx 路径使用）
+	result Result[T]     // 普通字段，受 state 的 resolved 位 fence 保护
+	state  atomic.Uint32 // 状态字：futureClaimed|futureResolved 位组合（见上方常量注释）
+	// condWaiters 是 Cond 路径等待者计数：waiter 在进入 mu 之前 Add(1)、
+	// 离开 mu 之后 Add(-1)，Resolve 在 mu 临界区内 Load 作为 Broadcast
+	// 守卫（见 Get 的唤醒正确性论证）。声明紧跟 state：编译器将两个 4B
+	// 原子字段打包进相邻槽位，Future[int] sizeof 保持 128B（无尾部 padding）。
+	condWaiters atomic.Int32
+	mu          sync.Mutex
+	callbacks   []func(Result[T])
+	// cond 是不可取消 ctx 慢路径的阻塞原语。cond.L 由两个构造器固定绑定
+	// &mu——内嵌零值 Cond 不可直接使用（L 为 nil），必须经构造器创建。
+	cond sync.Cond
 }
 
 // resolvedSentinel 是全局已关闭 channel，被 NewResolvedFuture 共享，
@@ -44,21 +60,26 @@ var resolvedSentinel = func() chan struct{} {
 }()
 
 // NewPendingFuture 创建待完成的 Future。
-// done channel 延迟分配（nil），仅在 Get 慢路径需要阻塞时才分配，
-// 消除热路径中的 channel 分配。
+// done channel 延迟分配（nil），仅在可取消 ctx 的 Get 慢路径需要阻塞时才
+// 分配；不可取消 ctx 的慢路径使用内嵌 Cond（cond.L 在此绑定 &mu）。
 func NewPendingFuture[T any]() *Future[T] {
-	return &Future[T]{}
+	f := &Future[T]{}
+	f.cond.L = &f.mu
+	return f
 }
 
 // NewResolvedFuture 创建已完成的 Future。
 // 使用 shared resolvedSentinel（已关闭 channel），无需每次分配。
 // 单次原子 Store 同时置位 claimed|resolved：该 Future 已持有结果，
 // 后续 Resolve 的 CAS(0, futureClaimed) 必然失败，禁止覆写已读值。
+// Get 永远命中 resolved 快速路径、不触 Cond——cond.L 初始化是构造
+// 完整性（非防御分支），保证类型不变式：cond.L 恒等于 &mu。
 func NewResolvedFuture[T any](r Result[T]) *Future[T] {
 	f := &Future[T]{
 		done:   resolvedSentinel,
 		result: r,
 	}
+	f.cond.L = &f.mu
 	f.state.Store(futureClaimed | futureResolved)
 	return f
 }
@@ -69,7 +90,33 @@ func (f *Future[T]) Get(ctx context.Context) Result[T] {
 	if f.state.Load()&futureResolved != 0 {
 		return f.result
 	}
-	// 慢路径：确保 done channel 存在（延迟分配）
+	// T3 慢路径分流：不可取消 ctx（Done()==nil，如 Background/TODO）走
+	// 内嵌 Cond，消除 lazy done-chan 的 96B hchan 分配。f.result 的读取
+	// 依赖 state resolved 位的 SeqCst fence（与快速路径同一可见性契约）。
+	//
+	// 唤醒正确性论证（三种交错穷举，无丢失唤醒）：
+	// waiter 先 condWaiters.Add(1)，再 mu.Lock，锁内 recheck 后才 Wait
+	// （Cond.Wait 在释放 mu 之前已 notifyListAdd 入列）；resolver 的
+	// state.Store 在其 mu.Lock 之前，Broadcast 在其 mu 临界区内。
+	//   (a) resolver 的 mu 段先完成 → waiter 锁内 recheck 见 resolved，
+	//       不进 Wait 直接返回；
+	//   (b) waiter 已进入 Wait（入列且已释 mu）→ resolver 的 mu.Lock
+	//       必然发生在入列之后 → Broadcast 命中该 waiter；
+	//   (c) waiter 已 Add(1) 但未及 mu.Lock，resolver 守卫见计数 >0，
+	//       Broadcast 空放（无人在列）→ waiter 随后锁内 recheck 兜底
+	//       （必见 resolved，因 state.Store 先于 resolver 的 mu 段）。
+	// for 循环 recheck 同时覆盖虚假唤醒。
+	if ctx.Done() == nil {
+		f.condWaiters.Add(1)
+		f.mu.Lock()
+		for f.state.Load()&futureResolved == 0 {
+			f.cond.Wait()
+		}
+		f.mu.Unlock()
+		f.condWaiters.Add(-1)
+		return f.result
+	}
+	// 慢路径（可取消 ctx，原实现逐字保留）：确保 done channel 存在（延迟分配）
 	f.mu.Lock()
 	if f.done == nil {
 		// 锁内二次检查：可能在等待锁期间被 Resolve 完成，
@@ -112,6 +159,14 @@ func (f *Future[T]) Resolve(r Result[T]) {
 	f.mu.Lock()
 	if f.done != nil {
 		close(f.done) // close 是并发安全的广播机制：所有 <-f.done 阻塞的 goroutine 都将解除
+	}
+	// T3 计数守卫：仅当存在 Cond 路径等待者时才 Broadcast。
+	// notifyListBroadcast 即使零等待者也会取内部列表锁——守卫使异步/
+	// Then-only/纯快速路径形态的 Resolve 零 Broadcast 成本（防热路径回退）。
+	// 与 waiter 的锁外 Add(1)/Add(-1) 均为同一 atomic 变量访问，无数据竞争；
+	// 空放场景（waiter 已计数未入列）由 Get 锁内 recheck 兜底，见其论证 (c)。
+	if f.condWaiters.Load() > 0 {
+		f.cond.Broadcast()
 	}
 	cbs := f.callbacks
 	f.callbacks = nil

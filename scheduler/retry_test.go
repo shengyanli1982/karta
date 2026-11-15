@@ -175,3 +175,38 @@ func TestRetry_MaxRetries_Respected(t *testing.T) {
 	// 任务仍然可以 Done
 	s.Done(env2)
 }
+
+// callOrderQueue 记录 Put/Forget 的调用顺序，用于钉住 Enqueue 的发布顺序
+// 不变量（P2-2）。嵌入 nil 接口仅补全方法集：Enqueue 路径只触达
+// Put/Forget，触达其余方法属于实现回归，应当 panic 暴露。
+type callOrderQueue struct {
+	workqueue.RetryQueue
+	calls *[]string
+}
+
+func (q *callOrderQueue) Put(value any) error {
+	*q.calls = append(*q.calls, "Put")
+	return nil
+}
+
+func (q *callOrderQueue) Forget(value any) {
+	*q.calls = append(*q.calls, "Forget")
+}
+
+// TestRetry_Enqueue_ForgetBeforePut — P2-2：Enqueue 必须先 Forget 再 Put。
+//
+// 顺序即语义：Put 是指针的发布点，发布后消费者可能立刻 Dequeue→handler
+// 失败→Retry 写入新的重试计数；若 Forget 后置（旧实现），会把这条新计数
+// 误清零，任务获得超出策略一次的尝试（Forget-after-Put 竞态窗口）。
+// Put 之前消费者不可能见到该指针，先清残留计数的指针复用防护语义等价、
+// 窗口归零。黑盒无法确定性观测纳秒级窗口，故以调用顺序作为不变量钉住
+// （行为等价性由 TestRetry_ReusePointerResetsCount 覆盖）。
+func TestRetry_Enqueue_ForgetBeforePut(t *testing.T) {
+	var calls []string
+	s := &retryScheduler{queue: &callOrderQueue{calls: &calls}}
+
+	task := &karta.TaskEnvelope{Input: "order-invariant"}
+	require.NoError(t, s.Enqueue(task))
+	require.Equal(t, []string{"Forget", "Put"}, calls,
+		"Forget 必须先于 Put：Put 发布指针后 Forget 会误清并发 Retry 写入的新计数（P2-2）")
+}

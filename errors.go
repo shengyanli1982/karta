@@ -7,8 +7,9 @@ import (
 
 // 哨兵错误 (ADR-012: 分层错误模型)
 var (
-	ErrPipelineClosed  = errors.New("karta: pipeline is closed")
-	ErrSchedulerClosed = errors.New("karta: scheduler is closed")
+	ErrPipelineClosed     = errors.New("karta: pipeline is closed")
+	ErrSchedulerClosed    = errors.New("karta: scheduler is closed")
+	ErrInvalidWorkerCount = errors.New("karta: invalid worker count")
 )
 
 // SubmitError 表示提交时刻的错误 (ADR-012)

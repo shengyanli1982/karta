@@ -67,3 +67,13 @@ func TestRateLimit_Transparent(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, 21, result)
 }
+
+// TestRateLimit_NilLimiter_Panics — P2-7：nil limiter 必须构造期 fail-fast。
+// 旧行为：构造成功，每个任务执行时 nil 解引用 panic 被 executor recover
+// 吞为晦涩的任务错误，配置错误被延迟到运行期（与库内 NewPipeline 对
+// nil scheduler 的构造期校验风格相悖）。
+func TestRateLimit_NilLimiter_Panics(t *testing.T) {
+	assert.PanicsWithValue(t, "karta middleware: limiter must not be nil",
+		func() { RateLimit[int, int](nil) },
+		"nil limiter 应构造期 panic（fail-fast）")
+}

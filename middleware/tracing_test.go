@@ -142,3 +142,12 @@ func TestTracing_DefaultSpanName(t *testing.T) {
 	require.Len(t, spans, 1)
 	assert.Equal(t, defaultSpanName, spans[0].Name)
 }
+
+// TestTracing_NilTracer_Panics — P2-7：nil tracer 必须构造期 fail-fast。
+// 旧行为：构造成功，每个任务执行时 nil 接口调用 panic 被 executor recover
+// 吞为晦涩的任务错误，配置错误被延迟到运行期。
+func TestTracing_NilTracer_Panics(t *testing.T) {
+	assert.PanicsWithValue(t, "karta middleware: tracer must not be nil",
+		func() { Tracing[int, int](nil) },
+		"nil tracer 应构造期 panic（fail-fast）")
+}

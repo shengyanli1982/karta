@@ -12,8 +12,8 @@ import (
 	karta "github.com/shengyanli1982/karta/v2"
 )
 
-// 编译期接口断言
-var _ karta.Scheduler = NewCompositeScheduler()
+// 编译期接口断言（指针形式：不触发构造，空 Composite 构造期即 panic，见 P2-8）
+var _ karta.Scheduler = (*compositeScheduler)(nil)
 
 func TestComposite_TwoStageFlowThrough(t *testing.T) {
 	s1 := NewFIFOScheduler()
@@ -184,19 +184,13 @@ func TestComposite_Len(t *testing.T) {
 }
 
 func TestComposite_Empty(t *testing.T) {
-	composite := NewCompositeScheduler()
-	defer composite.Shutdown()
-
-	err := composite.Enqueue(&karta.TaskEnvelope{Input: "test"})
-	assert.ErrorIs(t, err, karta.ErrSchedulerClosed)
-
-	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
-	defer cancel()
-
-	_, err = composite.Dequeue(ctx)
-	assert.Error(t, err)
-
-	assert.Equal(t, 0, composite.Len())
+	// P2-8：空链路是必然的构造错误——Dequeue 恒返 ErrSchedulerClosed 而
+	// IsClosed 恒 false，接入 Pipeline 后 executor 将无限 pacing 空转且不
+	// 消费任何任务（错误被 pacing 吞没，无日志可查）。构造期必须 fail-fast
+	//（与 NewPipeline 对 nil scheduler 的校验风格一致）。
+	assert.PanicsWithValue(t, "karta scheduler: composite requires at least one scheduler",
+		func() { NewCompositeScheduler() },
+		"空 Composite 构造必须 panic（fail-fast）")
 }
 
 func TestComposite_DequeueContextCancel(t *testing.T) {

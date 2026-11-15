@@ -23,6 +23,9 @@ The library offers two core components:
 - **High-performance fast paths** — `Group.Map` uses a sequential fast path for small batches, eliminating goroutine overhead; `Future` uses lazy channel allocation and atomic checks to minimize allocations
 - **Middleware chain** — composable `Middleware[In, Out]` wrapping pattern (Recovery, Logging, Timeout, RateLimit, Retry, Metrics, Tracing)
 - **11 Scheduler implementations** — SimpleScheduler (built-in) + FIFO, Delay, Priority, RateLimiting, Timer, Bounded, Retry, DLQ, Lease, Composite
+- **Per-task submit options** — `WithPriority`, `WithDelay`, `WithDeadline`, and `WithDedupKey` (singleflight deduplication) on `Submit` / `SubmitWithHandler`
+- **Auto retry & dead-letter routing** — `WithAutoRetry(true)` lets the executor drive scheduler-level retries; exhausted tasks can be routed to a DLQ automatically
+- **Runtime dynamics** — `Pipeline.Tune(n)` live worker resizing and `SubmitEvery` periodic submission with skip-if-busy semantics
 - **LifecycleManager** — signal-aware graceful shutdown with per-component timeout
 - **v1compat package** — backward-compatible wrappers for incremental migration from karta v1
 - **Minimal dependencies** — core uses only `golang.org/x/time/rate` (rate limiting); middleware adds optional Prometheus and OpenTelemetry support
@@ -76,7 +79,7 @@ func main() {
 
 ### Pipeline — Async Submission with Future
 
-`Pipeline` supports three submission modes: `Submit` (immediate), `SubmitAfter` (delayed), and `SubmitWithHandler` (per-task handler override). Returned `Future[T]` objects support blocking `Get(ctx)` and callback chaining with `Then(fn)`:
+`Pipeline` supports three submission modes: `Submit` (immediate), `SubmitAfter` (delayed), and `SubmitWithHandler` (per-task handler override). `Submit` and `SubmitWithHandler` accept variadic submit options (`WithPriority`, `WithDelay`, `WithDeadline`, `WithDedupKey`), and `SubmitEvery` adds ticker-driven periodic submission. Returned `Future[T]` objects support blocking `Get(ctx)` and callback chaining with `Then(fn)`:
 
 ```go
 package main
@@ -195,6 +198,7 @@ LifecycleManager          Signal-aware graceful shutdown coordinator
 | `WithSpawnRate(n int)`               | Worker spawn rate limit (per second)             | `4`     |
 | `WithPipelineCallback(cb Callback)`  | Lifecycle callback                               | no-op   |
 | `WithPipelineMiddleware(mws ...any)` | Middleware to wrap the handler                   | none    |
+| `WithAutoRetry(enabled bool)`        | Executor drives scheduler-level `Retryer` on handler error | `false` |
 
 ## Schedulers
 
@@ -208,17 +212,85 @@ import "github.com/shengyanli1982/karta/v2/scheduler"
 | ------------------- | --------------------------------------------- | ------------------------------------------------------------ | -------------------- |
 | **SimpleScheduler** | `karta.NewSimpleScheduler(bufferSize)`        | Channel-based FIFO (built-in, no sub-package)                | Full — FIFO by design |
 | **FIFO**            | `scheduler.NewFIFOScheduler()`                | workqueue.Queue-based FIFO                                   | Full |
-| **Delay**           | `scheduler.NewDelayScheduler()`               | Delayed task support via `TaskEnvelope.Delay`                | Degraded to FIFO — Pipeline never enqueues with `Delay` set (`SubmitAfter` waits client-side and clears it); drive the Scheduler API directly for scheduler-native delay |
-| **Priority**        | `scheduler.NewPriorityScheduler()`            | Priority queue (lower number = higher priority)              | Degraded to FIFO — Pipeline never sets `TaskEnvelope.Priority`; drive the Scheduler API directly to use priorities |
+| **Delay**           | `scheduler.NewDelayScheduler()`               | Delayed task support via `TaskEnvelope.Delay`                | Full — submit with `karta.WithDelay(d)`; the scheduler holds the task until due (`SubmitAfter` still waits client-side and clears `Delay`) |
+| **Priority**        | `scheduler.NewPriorityScheduler()`            | Priority queue (lower number = higher priority)              | Full — submit with `karta.WithPriority(n)` (lower number = higher priority) |
 | **RateLimiting**    | `scheduler.NewRateLimitingScheduler(limiter)` | Token-bucket rate-limited queue                              | Full — dequeue-side rate limiting, independent of envelope fields |
-| **Timer**           | `scheduler.NewTimerScheduler()`               | Absolute deadline + relative delay scheduling                | Degraded to FIFO — Pipeline never sets `TaskEnvelope.Deadline`/`Delay`; drive the Scheduler API directly |
+| **Timer**           | `scheduler.NewTimerScheduler()`               | Absolute deadline + relative delay scheduling                | Full — submit with `karta.WithDeadline(t)` (absolute) or `karta.WithDelay(d)` (relative) |
 | **Bounded**         | `scheduler.NewBoundedScheduler(capacity)`     | Bounded blocking queue with back-pressure (may briefly block when full before returning ErrSchedulerFull) | Full — enqueue-side capacity check |
-| **Retry**           | `scheduler.NewRetryScheduler(policy)`         | Automatic retry with configurable policy                     | Degraded to FIFO — automatic requeue requires calling `Retry(task, reason)` (not part of the `Scheduler` interface), which the Pipeline executor never does; use `middleware.Retry` for Pipeline workloads |
-| **DLQ**             | `scheduler.NewDLQScheduler(maxRetries)`       | Dead-letter queue for failed tasks                           | Degraded to FIFO — `maxRetries` is metadata only; dead-letter routing requires driving the Scheduler API directly |
+| **Retry**           | `scheduler.NewRetryScheduler(policy)`         | Automatic retry with configurable policy                     | Full — with `karta.WithAutoRetry(true)` the executor drives the `Retryer` interface automatically (default off); `middleware.Retry` remains available for in-handler retries |
+| **DLQ**             | `scheduler.NewDLQScheduler(maxRetries)`       | Dead-letter queue for failed tasks                           | Full — dead letters are readable via `GetDeadLetters()` (type assertion); for automatic retry-exhaustion → dead-letter routing use `NewRetrySchedulerWithDLQ(policy)` + `karta.WithAutoRetry(true)` |
 | **Lease**           | `scheduler.NewLeaseScheduler(leaseTimeout)`   | Lease-based task ownership with auto-requeue                 | At-least-once delivery semantics — `Dequeue` grants a lease, `Done` acks it; unacked tasks are automatically requeued after the lease timeout |
 | **Composite**       | `scheduler.NewCompositeScheduler(scheds...)`  | Chains multiple schedulers (enqueue → first, dequeue → last) | Depends on the chained schedulers |
 
-> **Note on Pipeline integration**: `Pipeline.Submit` / `SubmitAfter` / `SubmitWithHandler` never populate `TaskEnvelope.Priority`, `Delay`, or `Deadline` (`SubmitAfter` implements the delay client-side and clears `Delay` before enqueuing), and the Pipeline executor never calls scheduler-specific extras such as `Retry`. Schedulers whose behavior depends on those fields therefore behave as FIFO when driven through a Pipeline — drive the `Scheduler` API directly (or use `middleware.Retry` / `SubmitAfter`) to get their native semantics.
+> **Note on Pipeline integration**: Scheduling metadata is first-class on the submit path — `Submit` / `SubmitWithHandler` accept `karta.WithPriority(n)`, `karta.WithDelay(d)`, `karta.WithDeadline(t)`, and `karta.WithDedupKey(key)` options, which are written to the `TaskEnvelope` before enqueuing, so field-driven schedulers (Priority / Delay / Timer) take effect natively behind a Pipeline. Schedulers implementing the optional `Retryer` interface (Retry, Retry+DLQ) are driven automatically by the executor when the Pipeline is created with `karta.WithAutoRetry(true)` (default off). `SubmitAfter` does not accept submit options: it waits client-side and clears `Delay` before enqueuing.
+
+## Advanced Features
+
+### Submit Options — Per-Task Scheduling Metadata
+
+`Submit` / `SubmitWithHandler` accept variadic `SubmitOption`s, applied to the task envelope before enqueuing:
+
+```go
+sched := scheduler.NewPriorityScheduler()
+p := karta.NewPipeline[Job, Report](handler, sched)
+defer p.Stop()
+
+p.Submit(ctx, job, karta.WithPriority(1))                         // lower number = higher priority
+p.Submit(ctx, job, karta.WithDelay(5*time.Second))                // scheduler-native delay (NewDelayScheduler / NewTimerScheduler)
+p.Submit(ctx, job, karta.WithDeadline(time.Now().Add(time.Hour))) // absolute release time (NewTimerScheduler)
+```
+
+### Auto Retry & Dead-Letter Queue
+
+With `karta.WithAutoRetry(true)`, the executor drives the scheduler's `Retryer` interface whenever a handler returns an error; the `Future` resolves only after final success or retry exhaustion. `NewRetrySchedulerWithDLQ` additionally routes exhausted tasks to a dead-letter queue:
+
+```go
+sched := scheduler.NewRetrySchedulerWithDLQ(nil) // nil = workqueue default exponential backoff
+p := karta.NewPipeline[In, Out](handler, sched, karta.WithAutoRetry(true))
+defer p.Stop()
+
+f, _ := p.Submit(ctx, in) // failed attempts are retried automatically
+
+// Dead letters are exposed via type assertion (not part of the Scheduler interface)
+if dlq, ok := sched.(interface{ GetDeadLetters() []*workqueue.DeadLetter }); ok {
+	log.Printf("dead letters: %d", len(dlq.GetDeadLetters()))
+}
+```
+
+### Task Deduplication (Singleflight)
+
+`WithDedupKey` merges duplicate submissions while a task is in flight: subsequent submits with the same key are not enqueued again — they share the first task's `Future`, so all callers observe the same result. Input/handler differences on merged submits are ignored (the first registration wins). The key is released when the task finally resolves (success, error, retry exhaustion, or cancellation), allowing later submits to execute again.
+
+```go
+f1, _ := p.Submit(ctx, "user:42", karta.WithDedupKey("user:42"))
+f2, _ := p.Submit(ctx, "user:42", karta.WithDedupKey("user:42"))
+// f1 == f2 — the handler runs once while the key is in flight
+```
+
+### Dynamic Worker Tuning
+
+`Tune` resizes the executor pool at runtime and `Workers` reports the current target. Scaling up spawns the delta gradually (throttled by the `WithSpawnRate` limiter); under no load, idle exit converges the live worker count to one rather than the target — incoming submissions spawn workers back up toward it. Scaling down lets surplus workers exit naturally when idle (at least one worker is always kept).
+
+```go
+if err := p.Tune(16); err != nil {
+	log.Fatal(err) // ErrInvalidWorkerCount (n < 1) or ErrPipelineClosed
+}
+fmt.Println(p.Workers())         // 16 — current target (spawn cap)
+fmt.Println(p.GetWorkerNumber()) // live executor goroutines (converges to target under load)
+```
+
+### Periodic Submission
+
+`SubmitEvery` is a ticker-driven helper for periodic jobs (cache cleanup, polling, report generation). It never piles up: if the previous `Future` has not resolved yet, the tick is skipped. It returns an idempotent `stop` function, and also stops when the context is canceled or the Pipeline is closed.
+
+```go
+p := karta.NewPipeline[CleanupInput, struct{}](cleanup, karta.NewSimpleScheduler(16))
+defer p.Stop()
+
+// Run cleanup every 5 minutes; slow runs skip ticks instead of queueing up
+stop := karta.SubmitEvery(ctx, p, 5*time.Minute, CleanupInput{})
+defer stop()
+```
 
 ## Middleware
 

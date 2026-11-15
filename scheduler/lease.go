@@ -25,6 +25,8 @@ type blockingLeasedQueue interface {
 // leaseEntry 记录一次 Dequeue 交付的租约信息。
 // leaseID 是底层队列的租约键，用于 Ack；owner 指向底层队列持有的原始
 // 任务指针，用于在任务完成时清理 owners 正向索引。
+// 以值类型存入 leases map（写入即拷贝 24B 结构），消除指针形态下
+// 每次交付的 &leaseEntry{} 堆分配。
 type leaseEntry struct {
 	leaseID string
 	owner   *karta.TaskEnvelope
@@ -47,11 +49,19 @@ type leaseScheduler struct {
 	// 失败即 panic，属 fail-fast：Dequeue 热路径不再重复断言。
 	blocking blockingLeasedQueue
 	closed   atomic.Bool
+	// mu 保护 leases/owners 双 map。T4：原双 sync.Map 在写多形态（每次
+	// 交付 2 写、每次 Done 1-2 删）下持续触发 Go 1.24+ HashTrieMap 底层
+	// 的节点分配（alloc profile 合计 34.3%）；原生 map+Mutex 为写多读少
+	// 场景的官方推荐形态，稳态零映射分配。单锁使 deliver 的
+	// 「换 owners 索引 + 清旧 leases」成为原子段，消除原双 sync.Map
+	// 操作间的中间状态窗口（语义增强，方向安全）。
+	mu sync.Mutex
 	// leases 以交付给消费者的拷贝指针为键，反查租约信息，供 Done 使用。
-	leases sync.Map // map[*karta.TaskEnvelope]*leaseEntry
+	// 值类型条目：map 写入直接拷贝结构体，无独立堆分配。
+	leases map[*karta.TaskEnvelope]leaseEntry
 	// owners 以底层原始任务指针为键，记录当前交付在外的拷贝，
 	// 用于重投递时清理上一份未完成的 leases 记录，避免映射泄漏。
-	owners sync.Map // map[*karta.TaskEnvelope]*karta.TaskEnvelope
+	owners map[*karta.TaskEnvelope]*karta.TaskEnvelope
 }
 
 // NewLeaseScheduler 创建基于 workqueue.LeasedQueue 的租约调度器。
@@ -65,6 +75,8 @@ func NewLeaseScheduler(leaseTimeout time.Duration) karta.Scheduler {
 	return &leaseScheduler{
 		queue:    q,
 		blocking: q.(blockingLeasedQueue),
+		leases:   make(map[*karta.TaskEnvelope]leaseEntry),
+		owners:   make(map[*karta.TaskEnvelope]*karta.TaskEnvelope),
 	}
 }
 
@@ -125,13 +137,17 @@ func (s *leaseScheduler) Dequeue(ctx context.Context) (*karta.TaskEnvelope, erro
 // deliver 基于底层原始任务生成一个交付给消费者的浅拷贝并登记租约。
 // 重投递场景下（同一原始指针再次出队），用新拷贝替换 owners 索引，
 // 并清理上一份未完成拷贝在 leases 中的记录，防止映射泄漏。
+// 「替换索引 + 清理旧记录 + 登记新记录」在单个 mu 临界区内原子完成。
 func (s *leaseScheduler) deliver(orig *karta.TaskEnvelope, leaseID string) *karta.TaskEnvelope {
 	copied := *orig
 	delivered := &copied
-	if prev, loaded := s.owners.Swap(orig, delivered); loaded {
-		s.leases.Delete(prev)
+	s.mu.Lock()
+	if prev, ok := s.owners[orig]; ok {
+		delete(s.leases, prev)
 	}
-	s.leases.Store(delivered, &leaseEntry{leaseID: leaseID, owner: orig})
+	s.owners[orig] = delivered
+	s.leases[delivered] = leaseEntry{leaseID: leaseID, owner: orig}
+	s.mu.Unlock()
 	return delivered
 }
 
@@ -139,13 +155,22 @@ func (s *leaseScheduler) deliver(orig *karta.TaskEnvelope, leaseID string) *kart
 // task 应为 Dequeue 返回的拷贝。如果租约已过期或不存在，静默忽略
 // （过期任务已由底层重新入队）。
 func (s *leaseScheduler) Done(task *karta.TaskEnvelope) {
-	val, ok := s.leases.LoadAndDelete(task)
+	s.mu.Lock()
+	entry, ok := s.leases[task]
+	if ok {
+		delete(s.leases, task)
+		// 仅当正向索引仍指向当前拷贝时才清理，避免误删重投递后的新拷贝
+		// 记录（等价于原 owners.CompareAndDelete(entry.owner, task)）
+		if cur, exists := s.owners[entry.owner]; exists && cur == task {
+			delete(s.owners, entry.owner)
+		}
+	}
+	s.mu.Unlock()
 	if !ok {
 		return
 	}
-	entry := val.(*leaseEntry)
-	// 仅当正向索引仍指向当前拷贝时才清理，避免误删重投递后的新拷贝记录
-	s.owners.CompareAndDelete(entry.owner, task)
+	// Ack 在临界区外执行：entry 为值拷贝，无锁内依赖；避免与底层
+	// 队列的内部锁产生跨层持锁耦合。
 	_ = s.queue.Ack(entry.leaseID)
 }
 

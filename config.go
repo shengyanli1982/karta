@@ -86,6 +86,7 @@ type pipelineOptions struct {
 	burstLimit   int
 	callback     Callback
 	middleware   []any
+	autoRetry    bool
 }
 
 // PipelineOption is a functional option for pipelineOptions.
@@ -155,6 +156,17 @@ func WithPipelineCallback(cb Callback) PipelineOption {
 func WithPipelineMiddleware(mws ...any) PipelineOption {
 	return func(o *pipelineOptions) {
 		o.middleware = append(o.middleware, mws...)
+	}
+}
+
+// WithAutoRetry 开启 Pipeline executor 自动驱动 Scheduler 级重试（默认关闭）。
+// 开启后 handler 返回 error 时，executor 通过 Retryer 接口委托调度器重新入队
+// （如 scheduler.NewRetryScheduler），Future 在最终成功或重试耗尽后才 Resolve，
+// 中间重试状态对调用方透明；调度器未实现 Retryer 时断言失败，静默走默认
+// 完成路径（直接 Resolve error），行为与关闭时一致。
+func WithAutoRetry(enabled bool) PipelineOption {
+	return func(o *pipelineOptions) {
+		o.autoRetry = enabled
 	}
 }
 
