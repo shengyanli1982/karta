@@ -286,21 +286,21 @@ sched := karta.NewSimpleScheduler(256)
 p := karta.NewPipeline(handler, sched)
 ```
 
-For advanced scheduling, use the `scheduler` sub-package. Note that schedulers whose behavior depends on `TaskEnvelope` fields (`Priority`, `Delay`, `Timer`) or on explicit `Retry` calls (`Retry`, `DLQ`) only take full effect when you drive the `Scheduler` API directly — `Pipeline.Submit` never populates those fields, so such schedulers degrade to FIFO behind a Pipeline. For delayed submission through a Pipeline use `SubmitAfter`; for retries use `middleware.Retry`:
+For advanced scheduling, use the `scheduler` sub-package. Scheduling metadata is first-class on the Pipeline submit path: `Submit` / `SubmitWithHandler` accept `karta.WithPriority(n)`, `karta.WithDelay(d)`, and `karta.WithDeadline(t)` options that are written to the `TaskEnvelope` before enqueuing, so `Priority` / `Delay` / `Timer` schedulers take full effect behind a Pipeline. The `Retry` scheduler (both `scheduler.NewRetryScheduler` and `scheduler.NewRetrySchedulerWithDLQ`) implements the optional `Retryer` interface; the standalone `DLQ` scheduler does not — use `scheduler.NewRetrySchedulerWithDLQ(policy)` for retry-exhaustion dead-letter routing. Create the Pipeline with `karta.WithAutoRetry(true)` (default off) and the executor drives retries automatically — pairing it with `NewRetrySchedulerWithDLQ` routes retry-exhausted tasks to a dead-letter queue (`GetDeadLetters()` via type assertion). `SubmitAfter` does not accept submit options — it delays client-side and clears `Delay` before enqueuing; `middleware.Retry` remains available for in-handler retries:
 
 ```go
 import "github.com/shengyanli1982/karta/v2/scheduler"
 
-// Priority-based scheduling (requires driving the Scheduler API directly;
-// behind a Pipeline it degrades to FIFO since TaskEnvelope.Priority is never set)
+// Priority-based scheduling (submit with karta.WithPriority(n);
+// lower number = higher priority)
 sched := scheduler.NewPriorityScheduler()
 
 // Rate-limited scheduling (fully effective behind a Pipeline — dequeue-side rate limiting)
 limiter := rate.NewLimiter(rate.Every(time.Second), 10)
 sched := scheduler.NewRateLimitingScheduler(limiter)
 
-// Delayed task scheduling (requires driving the Scheduler API directly;
-// behind a Pipeline use SubmitAfter instead — it delays client-side and clears TaskEnvelope.Delay)
+// Delayed task scheduling (submit with karta.WithDelay(d) for scheduler-native delay;
+// SubmitAfter is the client-side alternative — it waits and clears TaskEnvelope.Delay)
 sched := scheduler.NewDelayScheduler()
 ```
 

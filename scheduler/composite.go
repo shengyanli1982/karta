@@ -45,7 +45,15 @@ type compositeScheduler struct {
 // 会触发底层将同一逻辑任务重新入队，导致该任务被多次交付与执行——handler
 // 副作用可能重复，同一 envelope 的 Future 完成是幂等的、不受影响；需要恰好
 // 一次副作用语义的业务方应自行保证 handler 幂等。
+//
+// Panics: schedulers 不可为空——空链路的 Dequeue 恒返 ErrSchedulerClosed
+// 而 IsClosed 恒 false，接入 Pipeline 后 executor 会无限 pacing 空转且
+// 永不消费（错误被 pacing 逻辑吞没、无日志可查），属必然的构造错误，
+// 构造期 fail-fast（与 NewPipeline 对 nil scheduler 的校验风格一致）。
 func NewCompositeScheduler(schedulers ...karta.Scheduler) karta.Scheduler {
+	if len(schedulers) == 0 {
+		panic("karta scheduler: composite requires at least one scheduler")
+	}
 	s := &compositeScheduler{
 		schedulers: schedulers,
 		stopCh:     make(chan struct{}),

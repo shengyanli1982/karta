@@ -2,7 +2,9 @@ package karta
 
 import (
 	"context"
+	"runtime"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -179,4 +181,89 @@ func TestSimpleScheduler_ConcurrentEnqueueShutdown_NoPanic(t *testing.T) {
 	wg.Wait()
 
 	assert.True(t, s.IsClosed())
+}
+
+// TestSimpleScheduler_Len_NeverNegative — P2-9：并发 Enqueue/Dequeue 下
+// Len() 不得出现负值（接口契约"当前队列中的任务数量"非负）。
+//
+// 竞态根因：旧实现 send 成功后才 len.Add(1)，而接收方（Dequeue / executor
+// 快速路径）在收到任务的瞬间即 Add(-1)——直送交接（接收方已阻塞在空队列上）
+// 时接收方可能抢先递减，Len() 读到瞬态负值。修复后计数先于 send 递增、
+// send 未成功的分支回退：只可能出现瞬态高估（可接受），不可能为负。
+// 观察方式为 tight-loop 轮询（窗口纳秒~微秒级，靠高频采样捕获）。
+func TestSimpleScheduler_Len_NeverNegative(t *testing.T) {
+	s := NewSimpleScheduler(16)
+	defer s.Shutdown()
+
+	stop := make(chan struct{})
+	var negative atomic.Bool
+	var minSeen atomic.Int64
+	var wg sync.WaitGroup
+
+	// 生产者：高频入队（满时让出调度，避免纯自旋淹没消费者）
+	for i := 0; i < 2; i++ {
+		wg.Add(1)
+		go func(id int) {
+			defer wg.Done()
+			for {
+				select {
+				case <-stop:
+					return
+				default:
+				}
+				if err := s.Enqueue(&TaskEnvelope{Input: id}); err != nil {
+					runtime.Gosched()
+				}
+			}
+		}(i)
+	}
+
+	// 消费者：阻塞式出队（制造"接收方已就绪等待直送"的窗口）
+	for i := 0; i < 2; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for {
+				select {
+				case <-stop:
+					return
+				default:
+				}
+				dqCtx, cancel := context.WithTimeout(context.Background(), 5*time.Millisecond)
+				_, err := s.Dequeue(dqCtx)
+				cancel()
+				_ = err
+			}
+		}()
+	}
+
+	// 观察者：tight-loop 轮询 Len()，捕获任何瞬态负值
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			n := int64(s.Len())
+			for {
+				old := minSeen.Load()
+				if n >= old || minSeen.CompareAndSwap(old, n) {
+					break
+				}
+			}
+			if n < 0 {
+				negative.Store(true)
+				return
+			}
+		}
+	}()
+
+	time.Sleep(time.Second) // 有界采样时长
+	close(stop)
+	wg.Wait()
+
+	assert.False(t, negative.Load(), "Len() 出现负值（最小观测值 %d）：计数递增必须先于 send", minSeen.Load())
 }

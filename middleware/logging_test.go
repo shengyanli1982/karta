@@ -81,3 +81,12 @@ func TestLogging_Transparent(t *testing.T) {
 	assert.Contains(t, logOut, "21")
 	assert.Contains(t, logOut, "42")
 }
+
+// TestLogging_NilLogger_Panics — P2-7：nil logger 必须构造期 fail-fast。
+// 旧行为：构造成功，每个任务执行时 nil 解引用 panic 被 executor recover
+// 吞为晦涩的任务错误，配置错误被延迟到运行期。
+func TestLogging_NilLogger_Panics(t *testing.T) {
+	assert.PanicsWithValue(t, "karta middleware: logger must not be nil",
+		func() { Logging[int, int](nil) },
+		"nil logger 应构造期 panic（fail-fast）")
+}

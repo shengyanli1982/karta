@@ -2,6 +2,7 @@ package scheduler
 
 import (
 	"context"
+	"sync"
 	"testing"
 	"time"
 
@@ -159,6 +160,67 @@ func TestLease_DoneCopyAcksUnderlyingLease(t *testing.T) {
 	env2, err := s.Dequeue(idleCtx)
 	assert.Nil(t, env2)
 	assert.Error(t, err)
+}
+
+// TestLease_ConcurrentEnqueueDequeueDone — T4 并发压力（-race 下运行）：
+// 多 goroutine 并发 Enqueue/Dequeue/Done，混入 1/10 故意不 Done 的任务
+// 触发租约过期重投递（deliver 的 prev 清理路径），drain 后白盒断言
+// leases/owners 双 map 收支平衡（无泄漏）。map+Mutex 实现下验证无数据
+// 竞争、无死锁。
+func TestLease_ConcurrentEnqueueDequeueDone(t *testing.T) {
+	s := NewLeaseScheduler(20 * time.Millisecond)
+	defer s.Shutdown()
+
+	const workers = 4
+	const iterations = 100
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	var wg sync.WaitGroup
+	for w := 0; w < workers; w++ {
+		wg.Add(1)
+		go func(seed int) {
+			defer wg.Done()
+			for i := 0; i < iterations; i++ {
+				if err := s.Enqueue(&karta.TaskEnvelope{Input: seed*iterations + i}); err != nil {
+					return
+				}
+				env, err := s.Dequeue(ctx)
+				if err != nil {
+					return
+				}
+				// 1/10 故意不 Done：租约过期触发重投递，
+				// 由 drain 阶段消费并 Done，验证 deliver 的 prev 清理
+				if (seed+i)%10 == 0 {
+					continue
+				}
+				s.Done(env)
+			}
+		}(w)
+	}
+	wg.Wait()
+
+	// drain：消费全部重投递任务并 Done；重投递扫描间隔 5ms，
+	// 500ms 空转窗口足以确认队列已排空
+	drainCtx, drainCancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer drainCancel()
+	drained := 0
+	for {
+		env, err := s.Dequeue(drainCtx)
+		if err != nil {
+			break
+		}
+		s.Done(env)
+		drained++
+	}
+	assert.Positive(t, drained, "被放弃的任务应经租约过期重投递后被 drain 消费")
+
+	// 白盒：映射收支平衡，无泄漏
+	ls := s.(*leaseScheduler)
+	ls.mu.Lock()
+	defer ls.mu.Unlock()
+	assert.Empty(t, ls.leases, "leases 映射不得泄漏")
+	assert.Empty(t, ls.owners, "owners 映射不得泄漏")
 }
 
 // BenchmarkLeaseScheduler_EnqueueDequeue 测量 Lease 调度器在并发场景下
