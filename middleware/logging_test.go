@@ -4,10 +4,11 @@ import (
 	"bytes"
 	"context"
 	"errors"
-	"log/slog"
-	"strings"
+	"fmt"
 	"testing"
 
+	"github.com/go-logr/logr"
+	"github.com/go-logr/logr/funcr"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -15,7 +16,9 @@ import (
 // TestLogging_Success 验证 handler 成功时日志有 Info 记录
 func TestLogging_Success(t *testing.T) {
 	var buf bytes.Buffer
-	logger := slog.New(slog.NewTextHandler(&buf, nil))
+	logger := funcr.New(func(prefix, args string) {
+		fmt.Fprintln(&buf, prefix, args)
+	}, funcr.Options{})
 
 	handler := func(ctx context.Context, input string) (string, error) {
 		return input + "-done", nil
@@ -30,15 +33,17 @@ func TestLogging_Success(t *testing.T) {
 
 	logOut := buf.String()
 	t.Logf("log output: %s", logOut)
-	assert.True(t, strings.Contains(logOut, "INFO") || strings.Contains(logOut, "info"),
-		"expected Info level log, got: %s", logOut)
+	assert.Contains(t, logOut, `"level"=0`,
+		"expected Info level log (funcr Info records carry level=0), got: %s", logOut)
 	assert.Contains(t, logOut, "handler completed")
 }
 
 // TestLogging_Error 验证 handler 返回 error 时日志有 Error 记录
 func TestLogging_Error(t *testing.T) {
 	var buf bytes.Buffer
-	logger := slog.New(slog.NewTextHandler(&buf, nil))
+	logger := funcr.New(func(prefix, args string) {
+		fmt.Fprintln(&buf, prefix, args)
+	}, funcr.Options{})
 	expectedErr := errors.New("handler failure")
 
 	handler := func(ctx context.Context, input string) (string, error) {
@@ -55,15 +60,17 @@ func TestLogging_Error(t *testing.T) {
 
 	logOut := buf.String()
 	t.Logf("log output: %s", logOut)
-	assert.True(t, strings.Contains(logOut, "ERROR") || strings.Contains(logOut, "error"),
-		"expected Error level log, got: %s", logOut)
+	assert.Contains(t, logOut, `"error"="handler failure"`,
+		"expected Error level log (funcr Error records carry the error key), got: %s", logOut)
 	assert.Contains(t, logOut, "handler failed")
 }
 
 // TestLogging_Transparent 验证输入输出正确传递
 func TestLogging_Transparent(t *testing.T) {
 	var buf bytes.Buffer
-	logger := slog.New(slog.NewTextHandler(&buf, nil))
+	logger := funcr.New(func(prefix, args string) {
+		fmt.Fprintln(&buf, prefix, args)
+	}, funcr.Options{})
 
 	handler := func(ctx context.Context, input int) (int, error) {
 		return input * 2, nil
@@ -82,11 +89,14 @@ func TestLogging_Transparent(t *testing.T) {
 	assert.Contains(t, logOut, "42")
 }
 
-// TestLogging_NilLogger_Panics — P2-7：nil logger 必须构造期 fail-fast。
-// 旧行为：构造成功，每个任务执行时 nil 解引用 panic 被 executor recover
+// TestLogging_ZeroLogger_Panics — P2-7：零值 logger 必须构造期 fail-fast。
+// 旧行为：构造成功，每个任务执行时才 nil 解引用 panic 被 executor recover
 // 吞为晦涩的任务错误，配置错误被延迟到运行期。
-func TestLogging_NilLogger_Panics(t *testing.T) {
-	assert.PanicsWithValue(t, "karta middleware: logger must not be nil",
-		func() { Logging[int, int](nil) },
-		"nil logger 应构造期 panic（fail-fast）")
+// 注：上述为 *slog.Logger 时代的因果链；logr 零值 Logger（sink==nil）下
+// Info/Error 为静默 no-op，日志被无声丢弃而非 panic，配置错误同样直到
+// 运行期都无从发现。
+func TestLogging_ZeroLogger_Panics(t *testing.T) {
+	assert.PanicsWithValue(t, "karta middleware: logger must not be the zero value",
+		func() { Logging[int, int](logr.Logger{}) },
+		"零值 logger 应构造期 panic（fail-fast）")
 }
