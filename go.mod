@@ -3,6 +3,7 @@ module github.com/shengyanli1982/karta/v2
 go 1.23
 
 require (
+	github.com/go-logr/logr v1.4.3
 	github.com/prometheus/client_golang v1.21.1
 	github.com/shengyanli1982/retry v0.1.9
 	github.com/shengyanli1982/workqueue/v2 v2.3.4
@@ -17,7 +18,6 @@ require (
 	github.com/beorn7/perks v1.0.1 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/davecgh/go-spew v1.1.1 // indirect
-	github.com/go-logr/logr v1.4.3 // indirect
 	github.com/go-logr/stdr v1.2.2 // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/kr/text v0.2.0 // indirect

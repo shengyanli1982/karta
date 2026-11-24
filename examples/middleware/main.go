@@ -4,10 +4,10 @@ package main
 import (
 	"context"
 	"fmt"
-	"log"
-	"log/slog"
 	"os"
 	"time"
+
+	"github.com/go-logr/logr/funcr"
 
 	karta "github.com/shengyanli1982/karta/v2"
 	"github.com/shengyanli1982/karta/v2/middleware"
@@ -38,9 +38,9 @@ var ctxKeyReqID = ctxKey{}
 func main() {
 	// ── 1. Using Chain to compose multiple built-in middleware ──
 
-	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
-		Level: slog.LevelInfo,
-	}))
+	logger := funcr.New(func(prefix, args string) {
+		fmt.Fprintln(os.Stdout, prefix, args)
+	}, funcr.Options{})
 
 	// Compose: Recovery(outermost) → Logging → Timeout(innermost)
 	mw := karta.Chain[int, string](
@@ -113,5 +113,5 @@ func main() {
 		fmt.Printf("  [%d] %s (ok=%v)\n", i, r.Value, r.Ok())
 	}
 
-	log.Println("Middleware examples completed.")
+	logger.Info("Middleware examples completed.")
 }

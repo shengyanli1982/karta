@@ -4,13 +4,18 @@ package main
 import (
 	"context"
 	"fmt"
-	"log"
+	"os"
 	"time"
 
+	"github.com/go-logr/logr/funcr"
 	karta "github.com/shengyanli1982/karta/v2"
 )
 
 func main() {
+	logger := funcr.New(func(prefix, args string) {
+		fmt.Fprintln(os.Stdout, prefix, args)
+	}, funcr.Options{})
+
 	// ── 1. Basic batch: int → string with 4 workers ──
 
 	handler := func(ctx context.Context, n int) (string, error) {
@@ -91,5 +96,5 @@ func main() {
 	fmt.Printf("\n=== After Stop ===\n")
 	fmt.Printf("  Map returns nil: %v\n", nilResults == nil)
 
-	log.Println("Group examples completed.")
+	logger.Info("Group examples completed.")
 }

@@ -2,20 +2,21 @@ package middleware
 
 import (
 	"context"
-	"log/slog"
 	"time"
 
+	"github.com/go-logr/logr"
 	karta "github.com/shengyanli1982/karta/v2"
 )
 
 // Logging 日志中间件，记录 handler 执行的输入/输出/耗时
 //
-// Panics: logger 不可为 nil——否则每个任务执行时才 nil 解引用 panic，
-// 被 executor recover 吞为晦涩的任务错误；构造期 fail-fast 便于定位配置
-// 错误（与 NewPipeline 对 nil scheduler 的校验风格一致）。
-func Logging[In, Out any](logger *slog.Logger) karta.Middleware[In, Out] {
-	if logger == nil {
-		panic("karta middleware: logger must not be nil")
+// Panics: logger 不可为零值——否则所有日志将被静默丢弃（logr 零值
+// Logger 的 Info/Error 为 no-op），配置错误直到运行期都无从发现；
+// 构造期 fail-fast 便于定位配置错误（与 NewPipeline 对 nil scheduler
+// 的校验风格一致）。
+func Logging[In, Out any](logger logr.Logger) karta.Middleware[In, Out] {
+	if logger.IsZero() {
+		panic("karta middleware: logger must not be the zero value")
 	}
 	return func(next karta.Handler[In, Out]) karta.Handler[In, Out] {
 		return func(ctx context.Context, input In) (Out, error) {
@@ -24,9 +25,8 @@ func Logging[In, Out any](logger *slog.Logger) karta.Middleware[In, Out] {
 			elapsed := time.Since(start)
 
 			if err != nil {
-				logger.Error("handler failed",
+				logger.Error(err, "handler failed",
 					"input", input,
-					"error", err,
 					"elapsed", elapsed,
 				)
 			} else {

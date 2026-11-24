@@ -135,15 +135,19 @@ package main
 
 import (
 	"context"
-	"log/slog"
+	"fmt"
+	"os"
 	"time"
 
+	"github.com/go-logr/logr/funcr"
 	karta "github.com/shengyanli1982/karta/v2"
 	"github.com/shengyanli1982/karta/v2/middleware"
 )
 
 func main() {
-	logger := slog.Default()
+	logger := funcr.New(func(prefix, args string) {
+		fmt.Fprintln(os.Stdout, prefix, args)
+	}, funcr.Options{})
 
 	g := karta.NewGroup[string, string](
 		func(ctx context.Context, s string) (string, error) {
@@ -253,7 +257,7 @@ f, _ := p.Submit(ctx, in) // failed attempts are retried automatically
 
 // Dead letters are exposed via type assertion (not part of the Scheduler interface)
 if dlq, ok := sched.(interface{ GetDeadLetters() []*workqueue.DeadLetter }); ok {
-	log.Printf("dead letters: %d", len(dlq.GetDeadLetters()))
+	logger.Info("dead letters collected", "count", len(dlq.GetDeadLetters()))
 }
 ```
 
@@ -273,7 +277,8 @@ f2, _ := p.Submit(ctx, "user:42", karta.WithDedupKey("user:42"))
 
 ```go
 if err := p.Tune(16); err != nil {
-	log.Fatal(err) // ErrInvalidWorkerCount (n < 1) or ErrPipelineClosed
+	logger.Error(err, "failed to tune workers") // ErrInvalidWorkerCount (n < 1) or ErrPipelineClosed
+	os.Exit(1)
 }
 fmt.Println(p.Workers())         // 16 — current target (spawn cap)
 fmt.Println(p.GetWorkerNumber()) // live executor goroutines (converges to target under load)
@@ -303,7 +308,7 @@ import "github.com/shengyanli1982/karta/v2/middleware"
 | Middleware    | Signature                                   | Description                                                   |
 | ------------- | ------------------------------------------- | ------------------------------------------------------------- |
 | **Recovery**  | `Recovery[In, Out]()`                       | Catches panics, returns error with stack trace                |
-| **Logging**   | `Logging[In, Out](logger *slog.Logger)`     | Logs input/output/elapsed time                                |
+| **Logging**   | `Logging[In, Out](logger logr.Logger)`      | Logs input/output/elapsed time                                |
 | **Timeout**   | `Timeout[In, Out](d time.Duration)`         | Sets per-handler deadline via `context.WithTimeout`           |
 | **RateLimit** | `RateLimit[In, Out](limiter *rate.Limiter)` | Token-bucket rate limiting via `golang.org/x/time/rate`       |
 | **Retry**     | `Retry[In, Out](opts ...RetryOption)`       | Retries on failure with configurable attempts/delay/condition |

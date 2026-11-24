@@ -4,13 +4,18 @@ package main
 import (
 	"context"
 	"fmt"
-	"log"
+	"os"
 	"time"
 
+	"github.com/go-logr/logr/funcr"
 	karta "github.com/shengyanli1982/karta/v2"
 )
 
 func main() {
+	logger := funcr.New(func(prefix, args string) {
+		fmt.Fprintln(os.Stdout, prefix, args)
+	}, funcr.Options{})
+
 	// ── 1. Basic Pipeline: submit + Future.Get() ──
 
 	handler := func(ctx context.Context, n int) (string, error) {
@@ -23,7 +28,8 @@ func main() {
 		karta.WithPipelineWorkers(4),
 	)
 	if p == nil {
-		log.Fatal("failed to create pipeline")
+		logger.Error(nil, "failed to create pipeline")
+		os.Exit(1)
 	}
 	defer p.Stop()
 
@@ -35,7 +41,8 @@ func main() {
 	for i := 0; i < 5; i++ {
 		f, err := p.Submit(ctx, i+1)
 		if err != nil {
-			log.Fatalf("submit failed: %v", err)
+			logger.Error(err, "submit failed")
+			os.Exit(1)
 		}
 		futures[i] = f
 	}
@@ -58,7 +65,8 @@ func main() {
 
 	fc, err := p.SubmitWithHandler(ctx, customHandler, 7)
 	if err != nil {
-		log.Fatalf("SubmitWithHandler failed: %v", err)
+		logger.Error(err, "SubmitWithHandler failed")
+		os.Exit(1)
 	}
 	rc := fc.Get(ctx)
 	fmt.Printf("  custom handler: %s (ok=%v)\n", rc.Value, rc.Ok())
@@ -66,7 +74,8 @@ func main() {
 	// Default handler still works after override.
 	fd, err := p.Submit(ctx, 99)
 	if err != nil {
-		log.Fatalf("submit after override failed: %v", err)
+		logger.Error(err, "submit after override failed")
+		os.Exit(1)
 	}
 	rd := fd.Get(ctx)
 	fmt.Printf("  default handler: %s (ok=%v)\n", rd.Value, rd.Ok())
@@ -77,7 +86,8 @@ func main() {
 	start := time.Now()
 	fa, err := p.SubmitAfter(ctx, 42, 200*time.Millisecond)
 	if err != nil {
-		log.Fatalf("SubmitAfter failed: %v", err)
+		logger.Error(err, "SubmitAfter failed")
+		os.Exit(1)
 	}
 	ra := fa.Get(ctx)
 	elapsed := time.Since(start)
@@ -91,7 +101,8 @@ func main() {
 	}
 	fe, err := p.SubmitWithHandler(ctx, errorHandler, 55)
 	if err != nil {
-		log.Fatalf("submit error handler failed: %v", err)
+		logger.Error(err, "submit error handler failed")
+		os.Exit(1)
 	}
 	re := fe.Get(ctx)
 	if !re.Ok() {
@@ -110,5 +121,5 @@ func main() {
 	fmt.Printf("\n=== After Stop ===\n")
 	fmt.Printf("  submit error: %v\n", submitErr)
 
-	log.Println("Pipeline examples completed.")
+	logger.Info("Pipeline examples completed.")
 }
